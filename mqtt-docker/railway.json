@@ -1,9 +1,0 @@
-{
-  "name": "ESP32 IoT Plant Monitor - MQTT Broker",
-  "description": "Mosquitto MQTT Broker with TCP Proxy for Railway",
-  "builder": "dockerfile",
-  "dockerfile": {
-    "path": "./Dockerfile",
-    "buildContext": "."
-  }
-}

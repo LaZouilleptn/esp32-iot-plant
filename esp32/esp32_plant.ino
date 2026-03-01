@@ -9,8 +9,8 @@
 
 // ================= RÉGLAGES MQTT =================
 // Adresse et port du serveur MQTT
-const char* MQTT_HOST = "ballast.proxy.rlwy.net";
-const int   MQTT_PORT = 18302;
+const char* MQTT_HOST = "192.168.1.100";
+const int   MQTT_PORT = 1883;
 // Identifiants MQTT (laisser vide si le broker accepte les connexions anonymes)
 const char* MQTT_USER = "";  // Vide = pas d'identifiant
 const char* MQTT_PASS = "";
@@ -128,7 +128,7 @@ void tryConnectMQTT() {
           Serial.println("ÉCHEC RÉSEAU - Vérifier:");
           Serial.println("  1. Le hostname est-il résolvable? (ping)");
           Serial.println("  2. Le port est-il correct?");
-          Serial.println("  3. Railway expose-t-il le port 1883 publiquement?");
+          Serial.println("  3. Le port MQTT est-il bien ouvert et accessible?");
           break;
         case -1: Serial.println("DÉCONNECTÉ"); break;
         case 1: Serial.println("PROTOCOLE MQTT INVALIDE"); break;

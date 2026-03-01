@@ -32,12 +32,12 @@ Système complet de surveillance et contrôle de plante connectée avec ESP32, M
 esp32-iot-plant/
 ├── esp32/                  # Code Arduino pour ESP32
 │   └── esp32_plant.ino
-├── mqtt-docker/            # Configuration MQTT / bases
+├── MQTT-BDD/               # Configuration MQTT / bases
 │   ├── mosquitto/
 │   │   └── mosquitto.conf
 │   └── postgres/
 │       └── init.sql
-└── web-mqtt/               # Application web Node.js
+└── WEB-APP/                # Application web Node.js
   ├── package.json
   ├── server.js           # API REST + WebSocket + MQTT bridge
   └── public/
@@ -49,7 +49,7 @@ esp32-iot-plant/
 ## 🚀 Installation
 
 ### Prérequis
-- Node.js 18+
+- Docker + Docker Compose
 - Arduino IDE (pour ESP32)
 - Capteurs : BH1750, capteur d'humidité du sol
 
@@ -85,19 +85,33 @@ INFLUX_BUCKET=plant_data
 
 ### Déploiement serveur physique avec auto-update
 
-Pour un hébergement sur serveur Linux (hors Railway) avec mise à jour automatique depuis GitHub + rebuild Docker, voir :
+Pour un hébergement sur serveur Linux avec mise à jour automatique depuis GitHub + rebuild Docker, voir :
 
 - [deploy/README.md](deploy/README.md)
 
-### 2. Lancer le serveur web
+### 2. Lancer la stack Docker (recommandé)
+
+Depuis la racine du projet :
 
 ```bash
-cd web-mqtt
+docker compose up -d --build
+```
+
+Services démarrés :
+- Web app : `http://localhost:3000`
+- Grafana : `http://localhost:3001`
+- InfluxDB : `http://localhost:8086`
+- MQTT : `localhost:1883`
+
+### 3. (Optionnel) Lancer seulement le serveur web en local
+
+```bash
+cd WEB-APP
 npm install
 npm start
 ```
 
-### 3. Configuration ESP32
+### 4. Configuration ESP32
 
 #### Installation des bibliothèques Arduino
 - WiFi
@@ -231,12 +245,12 @@ Timestamp: automatique
 - Vérifier le moniteur série (115200 baud)
 
 ### Pas de connexion MQTT
-- Vérifier que le broker est démarré : `docker-compose ps`
+- Vérifier que le broker est démarré : `docker compose ps`
 - Vérifier l'adresse IP : `docker inspect mqtt-broker | grep IPAddress`
 - Tester avec mosquitto_pub/sub
 
 ### Interface web ne reçoit pas de données
-- Vérifier les logs : `docker-compose logs -f web`
+- Vérifier les logs : `docker compose logs -f web`
 - Vérifier la console du navigateur (F12)
 - Tester l'API : `curl http://localhost:3000/health`
 
