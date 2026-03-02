@@ -1,52 +1,61 @@
+// === Bibliothèques utilisées ===
+// Elles servent à se connecter au WiFi/MQTT et à lire les capteurs.
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Wire.h>
 #include <BH1750.h>
-#include <Adafruit_BMP280.h>
+#include <Adafruit_BME280.h>
+#include <adafruit_sensor.h>
 
-// ================= CONFIGURATION UTILISATEUR =================
-bool USE_SERVER_1 = true;  // Mets sur false pour désactiver le PC 1
-bool USE_SERVER_2 = true; // Mets sur false pour désactiver le PC 2
+// ================= RÉGLAGES MQTT =================
+// Adresse et port du serveur MQTT
+const char* MQTT_HOST = "172.16.8.111";
+const int   MQTT_PORT = 1883;
+// Identifiants MQTT (laisser vide si le broker accepte les connexions anonymes)
+const char* MQTT_USER = "";  // Vide = pas d'identifiant
+const char* MQTT_PASS = "";
+// =================================================
 
-const char* MQTT_HOST1 = "172.16.8.81";
-const char* MQTT_HOST2 = "172.16.8.8";
-// =============================================================
-
-#define I2C_SDA 22
-#define I2C_SCL 21
-#define SOIL_PIN 34
-#define LED_PIN 2
-#define FAN_PIN 14
-#define HUMIDIFIER_PIN 27
-#define CTP_SDA 18
-#define CTP_SCL 19
+// === Branchements des broches ===
+#define I2C_SDA 22          // Fil SDA (communication capteurs I2C)
+#define I2C_SCL 21          // Fil SCL (communication capteurs I2C)
+#define SOIL_PIN 34         // Lecture humidité du sol
+#define WATER_LEVEL_PIN 35  // Détection niveau d'eau (plein/vide)
+#define LED_PIN 2           // Commande LED
+#define FAN_PIN 14          // Commande ventilateur
+#define HUMIDIFIER_PIN 27   // Commande humidificateur
 
 const char* WIFI_SSID = "CFAINSTA_STUDENTS";
 const char* WIFI_PASS = "Cf@InSt@-$tUd3nT";
-const int   MQTT_PORT  = 1883;
 const char* TOPIC_TELEMETRY = "tp/esp32/telemetry";
 const char* TOPIC_CMD       = "tp/esp32/cmd";
 
-WiFiClient espClient1;
-WiFiClient espClient2;
-PubSubClient mqtt1(espClient1);
-PubSubClient mqtt2(espClient2);
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
 BH1750 lightMeter;
-Adafruit_BMP280 bmp; // I2C
+Adafruit_BME280 bme; // Capteur météo en I2C
 
-// Pression au niveau de la mer (hPa) pour calcul altitude
+// Permet de savoir si les capteurs sont bien détectés
+bool bh1750_ok = false;
+bool bme280_ok = false;
+// Valeur de référence de pression atmosphérique
 const float SEA_LEVEL_HPA = 1013.25;
 
-// États des appareils
+// État actuel des sorties
 bool ledOn = false;
 bool fanOn = false;
 bool humidifierOn = false;
 
 unsigned long lastSend = 0;
-unsigned long lastRetry1 = 0;
-unsigned long lastRetry2 = 0;
-const int retryInterval = 5000; // Tentative toutes les 5s
+unsigned long lastRetry = 0;
+const int retryInterval = 5000;     // Réessayer la connexion toutes les 5 secondes
+const int sendInterval = 5000;      // Envoyer les mesures toutes les 5 secondes
 
+// Type de capteur de niveau d'eau
+const bool WATER_LEVEL_ACTIVE_LOW = true; // true = capteur actif quand la broche est LOW
+
+
+// === Réception des commandes à distance ===
 void onMessage(char* topic, byte* payload, unsigned int length) {
   String msg = "";
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
@@ -80,117 +89,159 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-void tryConnectMQTT1() {
-  if (USE_SERVER_1 && !mqtt1.connected() && millis() - lastRetry1 > retryInterval) {
-    lastRetry1 = millis();
-    Serial.print("[MQTT 1] Tentative de connexion à ");
-    Serial.print(MQTT_HOST1);
+// === Connexion au serveur MQTT avec tentative automatique ===
+void tryConnectMQTT() {
+  if (!mqtt.connected() && millis() - lastRetry > retryInterval) {
+    lastRetry = millis();
+    Serial.print("[MQTT] Connexion à ");
+    Serial.print(MQTT_HOST);
     Serial.print(":");
     Serial.print(MQTT_PORT);
     Serial.print("... ");
-    String clientId = "ESP32-P1-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-    if (mqtt1.connect(clientId.c_str())) {
-      mqtt1.subscribe(TOPIC_CMD);
+    
+    String clientId = "ESP32-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+    
+    // Connexion avec identifiants ou sans identifiants
+    bool connected = false;
+    if (strlen(MQTT_USER) > 0) {
+      connected = mqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASS);
+    } else {
+      connected = mqtt.connect(clientId.c_str());
+    }
+    
+    if (connected) {
+      mqtt.subscribe(TOPIC_CMD);
       Serial.println("OK ✓");
     } else {
-      Serial.print("ÉCHEC (code: ");
-      Serial.print(mqtt1.state());
-      Serial.println(")");
+      int code = mqtt.state();
+      Serial.print("ÉCHEC (");
+      Serial.print(code);
+      Serial.print(") ");
+      
+      // Messages d'aide en cas d'échec
+      switch(code) {
+        case -4: Serial.println("TIMEOUT - Serveur ne répond pas"); break;
+        case -3: Serial.println("CONNEXION PERDUE"); break;
+        case -2: 
+          Serial.println("ÉCHEC RÉSEAU - Vérifier:");
+          Serial.println("  1. Le hostname est-il résolvable? (ping)");
+          Serial.println("  2. Le port est-il correct?");
+          Serial.println("  3. Le port MQTT est-il bien ouvert et accessible?");
+          break;
+        case -1: Serial.println("DÉCONNECTÉ"); break;
+        case 1: Serial.println("PROTOCOLE MQTT INVALIDE"); break;
+        case 2: Serial.println("CLIENT_ID REJETÉ"); break;
+        case 3: Serial.println("SERVEUR INDISPONIBLE"); break;
+        case 4: Serial.println("AUTHENTIFICATION ÉCHOUÉE"); break;
+        case 5: Serial.println("NON AUTORISÉ"); break;
+        default: Serial.println("ERREUR INCONNUE");
+      }
     }
   }
 }
 
-void tryConnectMQTT2() {
-  if (USE_SERVER_2 && !mqtt2.connected() && millis() - lastRetry2 > retryInterval) {
-    lastRetry2 = millis();
-    Serial.print("[MQTT 2] Tentative de connexion à ");
-    Serial.print(MQTT_HOST2);
-    Serial.print(":");
-    Serial.print(MQTT_PORT);
-    Serial.print("... ");
-    String clientId = "ESP32-P2-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-    if (mqtt2.connect(clientId.c_str())) {
-      mqtt2.subscribe(TOPIC_CMD);
-      Serial.println("OK ✓");
-    } else {
-      Serial.print("ÉCHEC (code: ");
-      Serial.print(mqtt2.state());
-      Serial.println(")");
-    }
-  }
-}
-
+// === Démarrage de la carte ===
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n\n=== ESP32 IoT Plant Monitor ===");
+  
   Wire.begin(I2C_SDA, I2C_SCL);
   pinMode(LED_PIN, OUTPUT);
   pinMode(FAN_PIN, OUTPUT);
   pinMode(HUMIDIFIER_PIN, OUTPUT);
+  pinMode(WATER_LEVEL_PIN, INPUT_PULLUP);
 
-  // Timeouts WiFi (2s pour laisser le temps à la connexion TCP)
-  espClient1.setTimeout(2000); 
-  espClient2.setTimeout(2000);
-
+  Serial.print("[WiFi] Connexion à ");
+  Serial.print(WIFI_SSID);
+  Serial.print("... ");
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println(" OK");
+  Serial.print("[WiFi] IP: ");
+  Serial.println(WiFi.localIP());
   
-  mqtt1.setServer(MQTT_HOST1, MQTT_PORT);
-  mqtt1.setCallback(onMessage);
-  mqtt2.setServer(MQTT_HOST2, MQTT_PORT);
-  mqtt2.setCallback(onMessage);
-
-  lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire);
+  Serial.print("[MQTT] Configuration: ");
+  Serial.print(MQTT_HOST);
+  Serial.print(":");
+  Serial.println(MQTT_PORT);
   
-  // Init BMP280
-  bool ok = bmp.begin(0x76);
-  if (!ok) ok = bmp.begin(0x77);
-  if (!ok) {
-    Serial.println("Erreur: BMP280 introuvable en I2C (0x76/0x77). Vérifie câblage.");
+  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setCallback(onMessage);
+  mqtt.setKeepAlive(60);
+  mqtt.setSocketTimeout(15);
+  
+  // Démarrage du capteur de luminosité
+if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire)) {
+  bh1750_ok = true;
+  Serial.println("BH1750 OK.");
+} else {
+  Serial.println("Erreur : BH1750 introuvable. Vérifie le câblage.");
+}
+  // Démarrage du capteur température / humidité / pression
+  if (bme.begin(0x76) || bme.begin(0x77)) {
+    bme280_ok = true;
+    Serial.println("BME280 OK.");
   } else {
-    bmp.setSampling(
-      Adafruit_BMP280::MODE_NORMAL,
-      Adafruit_BMP280::SAMPLING_X2,   // Température
-      Adafruit_BMP280::SAMPLING_X16,  // Pression
-      Adafruit_BMP280::FILTER_X16,
-      Adafruit_BMP280::STANDBY_MS_500
-    );
-    Serial.println("BMP280 OK.");
+    Serial.println("Erreur: BME280 introuvable en I2C (0x76/0x77). Vérifie câblage.");
   }
   
   Serial.println("\nPrêt !");
 }
 
+// === Boucle continue ===
+// 1) lit les commandes, 2) se reconnecte si besoin, 3) envoie les mesures
 void loop() {
-  // 1. Priorité au traitement des messages (Actions rapides)
-  if (USE_SERVER_1) mqtt1.loop();
-  if (USE_SERVER_2) mqtt2.loop();
+  // 1. Traiter rapidement les commandes reçues
+  mqtt.loop();
 
-  // 2. Tentatives de connexion
-  tryConnectMQTT1();
-  tryConnectMQTT2();
+  // 2. Reconnexion si la liaison est coupée
+  tryConnectMQTT();
 
-  // 3. Envoi des données
+  // 3. Envoi périodique des capteurs
   unsigned long now = millis();
-  if (now - lastSend >= 2000) {
+  if (now - lastSend >= sendInterval) {
     lastSend = now;
-
-    float lux = lightMeter.readLightLevel();
+    
+    // Lire les capteurs avec contrôle d'erreur
+    int lux = -1;
+    if (bh1750_ok) {
+      float luxFloat = lightMeter.readLightLevel();
+      lux = (int)luxFloat;
+      }
+    
     int soilRaw = analogRead(SOIL_PIN);
-    float soilPercent = map(soilRaw, 4095, 0, 0, 100);
-    float temperature = bmp.readTemperature();
-    float pressurePa = bmp.readPressure();
-    float pressurehPa = pressurePa / 100.0;
+    int soilPercent = map(soilRaw, 4095, 0, 0, 100);
+    
+    int temperature = -999;
+    int humidity = -1;
+    int pressurehPa = 0;
+    if (bme280_ok) {
+      temperature = (int)bme.readTemperature();
+      humidity = (int)bme.readHumidity();
+      int pressurePa = (int)bme.readPressure();
+      pressurehPa = pressurePa / 100;
+    }
+
+    int waterRaw = digitalRead(WATER_LEVEL_PIN);
+    bool waterFull = WATER_LEVEL_ACTIVE_LOW ? (waterRaw == LOW) : (waterRaw == HIGH);
+
+    // Message d'aide dans le moniteur série
+    if (lux < 0) Serial.println("[ERROR] BH1750 pas disponible - vérifier connexion I2C");
 
     String payload = "{\"luminosite\":" + String(lux) + 
                      ",\"humidite_sol\":" + String(soilPercent) + 
-                     ",\"temperature\":" + String(temperature, 2) +
-                     ",\"pressure\":" + String(pressurehPa, 2) +
+                     ",\"temperature\":" + String(temperature) +
+                     ",\"humidite_air\":" + String(humidity) +
+                     ",\"pressure\":" + String(pressurehPa) +
                      ",\"rssi\":" + String(WiFi.RSSI()) + 
+                     ",\"water_full\":" + (waterFull ? "true" : "false") +
                      ",\"led_on\":" + (ledOn ? "true" : "false") +
                      ",\"fan_on\":" + (fanOn ? "true" : "false") +
                      ",\"humidifier_on\":" + (humidifierOn ? "true" : "false") + "}";
 
-    if (USE_SERVER_1 && mqtt1.connected()) mqtt1.publish(TOPIC_TELEMETRY, payload.c_str());
-    if (USE_SERVER_2 && mqtt2.connected()) mqtt2.publish(TOPIC_TELEMETRY, payload.c_str());
+    if (mqtt.connected()) mqtt.publish(TOPIC_TELEMETRY, payload.c_str());
   }
+  
+  delay(50); // Petite pause pour garder le système fluide
 }

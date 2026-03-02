@@ -9,8 +9,8 @@ package-lock.json
 yarn.lock
 
 # Docker
-mqtt-docker/mosquitto/data/
-mqtt-docker/mosquitto/log/
+MQTT-BDD/mosquitto/data/
+MQTT-BDD/mosquitto/log/
 
 # IDE
 .vscode/
