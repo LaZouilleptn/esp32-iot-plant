@@ -378,8 +378,7 @@ Timestamp: automatique
 - Auth JWT (7 jours), panneau Parametres, graphiques Chart.js
 - Accessibilité (ARIA, clavier)
 
-## 👤 Auteur
-
-Emile
-Enzo
-Julien
+## 👤 Auteurs
+- Emile
+- Enzo
+- Julien
