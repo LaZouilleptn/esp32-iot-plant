@@ -434,16 +434,37 @@ canvas {
 }
 
 .section-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 1rem;
   margin-bottom: 0.75rem;
 }
 
 .section-header h2 {
   margin: 0;
-  flex: 1;
+  grid-column: 2;
+  text-align: center;
+}
+
+.section-header > :last-child {
+  grid-column: 3;
+  justify-self: end;
+}
+
+button,
+.btn-circle {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.btn-circle .icon,
+.btn-circle .label,
+.auto-toggle,
+.auto-toggle-label,
+.auto-slider {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .ghost-btn {
