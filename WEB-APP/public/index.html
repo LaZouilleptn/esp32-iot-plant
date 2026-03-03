@@ -183,45 +183,109 @@
       <div class="setting-group">
         <label>🌞 Luminosité (lux)</label>
         <div class="threshold-inputs">
-          <input type="number" id="lux-min" placeholder="Min" min="0">
+          <div class="threshold-field">
+            <span class="threshold-label">Min</span>
+            <input type="number" id="lux-min" placeholder="Min" min="0">
+          </div>
           <span class="range-sep">-</span>
-          <input type="number" id="lux-max" placeholder="Max" min="0">
+          <div class="threshold-field">
+            <span class="threshold-label">Max</span>
+            <input type="number" id="lux-max" placeholder="Max" min="0">
+          </div>
         </div>
       </div>
 
       <div class="setting-group">
         <label>💧 Humidité du sol (%)</label>
         <div class="threshold-inputs">
-          <input type="number" id="soil-min" placeholder="Min" min="0" max="100">
+          <div class="threshold-field">
+            <span class="threshold-label">Min</span>
+            <input type="number" id="soil-min" placeholder="Min" min="0" max="100">
+          </div>
           <span class="range-sep">-</span>
-          <input type="number" id="soil-max" placeholder="Max" min="0" max="100">
+          <div class="threshold-field">
+            <span class="threshold-label">Max</span>
+            <input type="number" id="soil-max" placeholder="Max" min="0" max="100">
+          </div>
         </div>
       </div>
 
       <div class="setting-group">
         <label>🌡️ Température (°C)</label>
         <div class="threshold-inputs">
-          <input type="number" id="temp-min" placeholder="Min">
+          <div class="threshold-field">
+            <span class="threshold-label">Min</span>
+            <input type="number" id="temp-min" placeholder="Min">
+          </div>
           <span class="range-sep">-</span>
-          <input type="number" id="temp-max" placeholder="Max">
+          <div class="threshold-field">
+            <span class="threshold-label">Max</span>
+            <input type="number" id="temp-max" placeholder="Max">
+          </div>
         </div>
       </div>
 
       <div class="setting-group">
         <label>💨 Humidité de l'air (%)</label>
         <div class="threshold-inputs">
-          <input type="number" id="air-min" placeholder="Min" min="0" max="100">
+          <div class="threshold-field">
+            <span class="threshold-label">Min</span>
+            <input type="number" id="air-min" placeholder="Min" min="0" max="100">
+          </div>
           <span class="range-sep">-</span>
-          <input type="number" id="air-max" placeholder="Max" min="0" max="100">
+          <div class="threshold-field">
+            <span class="threshold-label">Max</span>
+            <input type="number" id="air-max" placeholder="Max" min="0" max="100">
+          </div>
         </div>
       </div>
 
       <div class="setting-group">
         <label>📶 Signal RSSI (dB)</label>
         <div class="threshold-inputs">
-          <input type="number" id="rssi-min" placeholder="Min">
+          <div class="threshold-field">
+            <span class="threshold-label">Min</span>
+            <input type="number" id="rssi-min" placeholder="Min">
+          </div>
           <span class="range-sep">-</span>
-          <input type="number" id="rssi-max" placeholder="Max">
+          <div class="threshold-field">
+            <span class="threshold-label">Max</span>
+            <input type="number" id="rssi-max" placeholder="Max">
+          </div>
+        </div>
+      </div>
+
+      <h3>Durée d'activation auto</h3>
+
+      <div class="durations-grid">
+        <div class="setting-group">
+          <label>💡 Lumière auto (s)</label>
+          <div class="threshold-inputs single-input">
+            <div class="threshold-field">
+              <span class="threshold-label">Durée</span>
+              <input type="number" id="led-duration" min="10" max="21600" step="10">
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <label>💧 Arrosage auto (s)</label>
+          <div class="threshold-inputs single-input">
+            <div class="threshold-field">
+              <span class="threshold-label">Durée</span>
+              <input type="number" id="hum-duration" min="5" max="600" step="5">
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <label>🌀 Ventilation auto (s)</label>
+          <div class="threshold-inputs single-input">
+            <div class="threshold-field">
+              <span class="threshold-label">Durée</span>
+              <input type="number" id="fan-duration" min="10" max="3600" step="10">
+            </div>
+          </div>
         </div>
       </div>
 

@@ -208,6 +208,11 @@ const defaultSettings = {
     led: false,
     hum: false,
     fan: false
+  },
+  automationDurations: {
+    led: 1800,
+    hum: 20,
+    fan: 180
   }
 };
 
@@ -217,7 +222,12 @@ let currentSettings = { ...defaultSettings };
 // en conservant des types sûrs (nombres/booleans) pour éviter
 // d'écrire des paramètres invalides dans le runtime.
 function mergeSettings(defaults, incoming = {}) {
-  const merged = { thresholds: {}, indicators: {}, automations: {} };
+  const merged = { thresholds: {}, indicators: {}, automations: {}, automationDurations: {} };
+  const durationBounds = {
+    led: { min: 10, max: 21600 },
+    hum: { min: 5, max: 600 },
+    fan: { min: 10, max: 3600 }
+  };
 
   for (const key of Object.keys(defaults.thresholds)) {
     const candidate = incoming.thresholds?.[key] || {};
@@ -236,6 +246,17 @@ function mergeSettings(defaults, incoming = {}) {
   for (const key of Object.keys(defaults.automations)) {
     const val = incoming.automations?.[key];
     merged.automations[key] = typeof val === 'boolean' ? val : defaults.automations[key];
+  }
+
+  for (const key of Object.keys(defaults.automationDurations)) {
+    const val = Number(incoming.automationDurations?.[key]);
+    if (!Number.isFinite(val) || val <= 0) {
+      merged.automationDurations[key] = defaults.automationDurations[key];
+      continue;
+    }
+
+    const bounds = durationBounds[key] || { min: 1, max: 86400 };
+    merged.automationDurations[key] = Math.min(bounds.max, Math.max(bounds.min, Math.round(val)));
   }
 
   return merged;

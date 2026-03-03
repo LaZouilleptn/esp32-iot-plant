@@ -29,9 +29,19 @@ const defaultSettings = {
     led: false,
     hum: false,
     fan: false
+  },
+  automationDurations: {
+    led: 1800,
+    hum: 20,
+    fan: 180
   }
 };
 let settingsCache = JSON.parse(JSON.stringify(defaultSettings));
+const automationTimerState = {
+  led: { timeoutId: null, activeUntil: 0, lastTriggerAt: 0 },
+  hum: { timeoutId: null, activeUntil: 0, lastTriggerAt: 0 },
+  fan: { timeoutId: null, activeUntil: 0, lastTriggerAt: 0 }
+};
 const deviceConfig = {
   led: { btnId: 'led-btn', autoId: 'led-auto', cmd: 'LED' },
   hum: { btnId: 'hum-btn', autoId: 'hum-auto', cmd: 'HUM' },
@@ -351,7 +361,72 @@ function mergeLocalSettings(incoming = {}) {
     if (typeof incomingAutomations[key] === 'boolean') merged.automations[key] = incomingAutomations[key];
   }
 
+  const incomingDurations = incoming.automationDurations || {};
+  for (const key of Object.keys(merged.automationDurations)) {
+    const durationCandidate = Number(incomingDurations[key]);
+    if (Number.isFinite(durationCandidate) && durationCandidate > 0) {
+      merged.automationDurations[key] = sanitizeDuration(key, durationCandidate);
+    }
+  }
+
   return merged;
+}
+
+function getDurationBounds(type) {
+  if (type === 'hum') return { min: 5, max: 600 };
+  if (type === 'fan') return { min: 10, max: 3600 };
+  return { min: 10, max: 21600 };
+}
+
+function sanitizeDuration(type, seconds) {
+  const { min, max } = getDurationBounds(type);
+  const parsed = Number(seconds);
+  if (!Number.isFinite(parsed)) return defaultSettings.automationDurations[type];
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function getAutomationDurationMs(type) {
+  const seconds = sanitizeDuration(type, settingsCache.automationDurations[type]);
+  return seconds * 1000;
+}
+
+function clearAutomationTimer(type) {
+  const timer = automationTimerState[type];
+  if (!timer) return;
+  if (timer.timeoutId) {
+    clearTimeout(timer.timeoutId);
+    timer.timeoutId = null;
+  }
+  timer.activeUntil = 0;
+}
+
+function startTimedAutomation(type) {
+  const timer = automationTimerState[type];
+  if (!timer) return;
+
+  const now = Date.now();
+  if (timer.activeUntil > now) return;
+
+  const durationMs = getAutomationDurationMs(type);
+  const cooldownMs = Math.max(15000, Math.floor(durationMs * 0.5));
+  if (now - timer.lastTriggerAt < cooldownMs) return;
+
+  timer.lastTriggerAt = now;
+  timer.activeUntil = now + durationMs;
+
+  setDeviceButtonState(type, true);
+  sendDeviceCommand(type, true);
+
+  if (timer.timeoutId) clearTimeout(timer.timeoutId);
+  timer.timeoutId = setTimeout(() => {
+    timer.timeoutId = null;
+    timer.activeUntil = 0;
+
+    if (!automationStates[type]) return;
+    setDeviceButtonState(type, false);
+    sendDeviceCommand(type, false);
+    runAutomations(latestTelemetry);
+  }, durationMs);
 }
 
 // Met à jour l'état visuel d'un bouton d'équipement (ON/OFF manuel).
@@ -408,9 +483,20 @@ function applyAutomationForDevice(type, telemetry) {
     else if (temp <= thresholds.temp.min) desiredState = false;
   }
 
-  if (desiredState === null || states[type] === desiredState) return;
-  setDeviceButtonState(type, desiredState);
-  sendDeviceCommand(type, desiredState);
+  if (desiredState === null) return;
+
+  const timer = automationTimerState[type];
+  const timerIsRunning = Boolean(timer?.activeUntil && timer.activeUntil > Date.now());
+
+  if (desiredState) {
+    startTimedAutomation(type);
+    return;
+  }
+
+  if (!timerIsRunning && states[type]) {
+    setDeviceButtonState(type, false);
+    sendDeviceCommand(type, false);
+  }
 }
 
 // Lance les automations activées pour les 3 équipements pilotables.
@@ -457,6 +543,11 @@ function collectSettingsFromUi() {
       led: automationStates.led,
       hum: automationStates.hum,
       fan: automationStates.fan
+    },
+    automationDurations: {
+      led: sanitizeDuration('led', parseThresholdInput('led-duration', settingsCache.automationDurations.led)),
+      hum: sanitizeDuration('hum', parseThresholdInput('hum-duration', settingsCache.automationDurations.hum)),
+      fan: sanitizeDuration('fan', parseThresholdInput('fan-duration', settingsCache.automationDurations.fan))
     }
   };
 }
@@ -473,6 +564,9 @@ function applySettingsToUi() {
   document.getElementById('temp-max').value = settingsCache.thresholds.temp.max;
   document.getElementById('rssi-min').value = settingsCache.thresholds.rssi.min;
   document.getElementById('rssi-max').value = settingsCache.thresholds.rssi.max;
+  document.getElementById('led-duration').value = sanitizeDuration('led', settingsCache.automationDurations.led);
+  document.getElementById('hum-duration').value = sanitizeDuration('hum', settingsCache.automationDurations.hum);
+  document.getElementById('fan-duration').value = sanitizeDuration('fan', settingsCache.automationDurations.fan);
 
   setAutomationVisualState('led', settingsCache.automations.led);
   setAutomationVisualState('hum', settingsCache.automations.hum);
@@ -490,6 +584,10 @@ async function handleAutomationToggle(type, enabled) {
 
   setAutomationVisualState(type, enabled);
   settingsCache.automations[type] = automationStates[type];
+
+  if (!enabled) {
+    clearAutomationTimer(type);
+  }
 
   if (enabled && latestTelemetry) {
     applyAutomationForDevice(type, latestTelemetry);
