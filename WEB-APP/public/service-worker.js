@@ -1,10 +1,16 @@
+//Le service worker gère le cache pour une expérience hors ligne fluide et des mises à jour efficaces.
+//Il pré-cache les ressources essentielles, nettoie les anciens caches lors de l'activation, 
+//et utilise des stratégies de cache adaptées pour les différentes requêtes (manifest, navigation, assets). 
+//Un canal de message permet à la page de forcer l'activation d'un worker en attente pour une mise à jour rapide.
+
+
 const CACHE_NAME = 'plant-pwa-v4';
 // Fichiers cœur de l'application (app shell) pré-cachés.
 const APP_SHELL = [
   '/',
   '/index.html',
   '/style.css',
-  '/app.js',
+  '/script.js',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png'

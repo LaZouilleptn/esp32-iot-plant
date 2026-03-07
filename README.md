@@ -2,15 +2,15 @@
 
 Système complet de surveillance et contrôle de plante connectée avec ESP32, MQTT, PostgreSQL, InfluxDB et interface web temps réel.
 
-## 📋 Fonctionnalités
+## Fonctionnalités
 
-### 🔧 Capteurs et Actuateurs
+### Capteurs et Actuateurs
 - **Luminosité** : Capteur BH1750 (0-65535 lux)
 - **Humidité du sol** : Capteur capacitif (0-100%)
 - **Signal WiFi** : RSSI en temps réel
 - **Contrôles** : LED, Pompe d'arrosage, Ventilateur
 
-### 🌐 Interface Web
+### Interface Web
 - Dashboard responsive (mobile/desktop)
 - Visualisation en cercles colorés
 - Graphiques historiques interactifs
@@ -18,7 +18,7 @@ Système complet de surveillance et contrôle de plante connectée avec ESP32, M
 - Panneau Parametres pour ajuster les seuils capteurs
 - Grafana pour dashboards avancés (source InfluxDB préconfigurée)
 
-### 💾 Backend
+### Backend
 - MQTT broker (Mosquitto)
 - PostgreSQL pour gestion des comptes
 - InfluxDB pour données time-series
@@ -26,7 +26,7 @@ Système complet de surveillance et contrôle de plante connectée avec ESP32, M
 - API Admin sécurisée par jeton secret (x-admin-token)
 - Seuils capteurs persistés en JSON (fichier settings)
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 esp32-iot-plant/
@@ -46,7 +46,7 @@ esp32-iot-plant/
     └── app.js          # Auth JWT, WebSocket, graphiques, seuils
 ```
 
-## 🚀 Installation
+## Installation
 
 ### Prérequis
 - Docker + Docker Compose
@@ -88,7 +88,7 @@ JWT_SECRET=<secret-long-et-aleatoire>
 ADMIN_SECRET_TOKEN=<token-admin-long-et-aleatoire>
 ```
 
-> ⚠️ Important : les identifiants d'initialisation InfluxDB/Grafana/PostgreSQL sont appliqués à la création initiale des volumes. Si les volumes existent déjà, changer `.env` ne remplace pas toujours automatiquement les comptes déjà créés.
+> Important : les identifiants d'initialisation InfluxDB/Grafana/PostgreSQL sont appliqués à la création initiale des volumes. Si les volumes existent déjà, changer `.env` ne remplace pas toujours automatiquement les comptes déjà créés.
 
 ### Déploiement serveur physique avec auto-update
 
@@ -176,7 +176,7 @@ docker compose restart web
 # Recharger après changement du .env (sans supprimer les volumes)
 docker compose up -d --build
 
-# Réinitialisation complète (⚠️ supprime les données)
+# Réinitialisation complète ( supprime les données)
 docker compose down -v && docker compose up -d --build
 ```
 
@@ -247,7 +247,7 @@ const char* WIFI_PASS = "VotreMotDePasse";
 2. Sélectionner le port COM
 3. Téléverser
 
-## 📊 Utilisation
+## Utilisation
 
 ### Interface Web
 Accéder à : **http://localhost:3000**
@@ -272,7 +272,7 @@ Accéder à : **http://localhost:3000**
 - Datasource : `InfluxDB-Plant` (provisionnée automatiquement)
 - Créer un dashboard et utiliser Flux sur le bucket `plant_data`
 
-## 🎯 Seuils et Alertes
+## Seuils et Alertes
 
 Seuils par défaut (éditables dans le panneau Parametres ou via `/api/settings`):
 
@@ -284,7 +284,7 @@ Seuils par défaut (éditables dans le panneau Parametres ou via `/api/settings`
 | Pression | 990-1030 hPa | < 990 ou > 1030 |
 | WiFi | > -70 dB | < -80 dB |
 
-## 🔧 Développement
+## Développement
 
 ### Structure des bases de données
 
@@ -306,7 +306,7 @@ Fields: luminosite, humidite_sol, co2, rssi
 Timestamp: automatique
 ```
 
-## 📝 Topics MQTT
+## Topics MQTT
 
 | Topic | Direction | Format |
 |-------|-----------|--------|
@@ -328,7 +328,7 @@ Timestamp: automatique
 - `FAN_ON` / `FAN_OFF`
 - `HUM_ON` / `HUM_OFF`
 
-## 🐛 Dépannage
+## Dépannage
 
 ### ESP32 ne se connecte pas au WiFi
 - Vérifier SSID et mot de passe
@@ -350,18 +350,18 @@ Timestamp: automatique
 - Tester la connexion PostgreSQL / InfluxDB avec les outils clients
 - InfluxDB UI : http://localhost:8086
 
-## 🔒 Sécurité
+## Sécurité
 
 ### Production
-- ✅ JWT signé avec `JWT_SECRET` robuste
-- ✅ Token admin séparé (`x-admin-token`)
-- ✅ Variables d'environnement pour credentials
-- ✅ Healthchecks pour MQTT / PostgreSQL / InfluxDB
-- ⚠️ Activer l'authentification MQTT (mosquitto.conf)
-- ⚠️ Utiliser HTTPS et certificats valides
-- ⚠️ Firewall pour les ports exposés
+- JWT signé avec `JWT_SECRET` robuste
+- Token admin séparé (`x-admin-token`)
+- Variables d'environnement pour credentials
+- Healthchecks pour MQTT / PostgreSQL / InfluxDB
+- Activer l'authentification MQTT (mosquitto.conf)
+- Utiliser HTTPS et certificats valides
+- Firewall pour les ports exposés
 
-## 📦 Optimisations
+## Optimisations
 
 ### Backend
 - PostgreSQL pour comptes utilisateurs
@@ -378,7 +378,7 @@ Timestamp: automatique
 - Auth JWT (7 jours), panneau Parametres, graphiques Chart.js
 - Accessibilité (ARIA, clavier)
 
-## 👤 Auteurs
+## Auteurs
 - Emile
 - Enzo
 - Julien

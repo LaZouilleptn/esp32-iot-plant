@@ -1,13 +1,14 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <!-- Métadonnées PWA + mobile -->
+  <!-- Métadonnées Progressive Web App + mobile -->
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e293b">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Serre ESP32">
+
   <title>Serre connectée</title>
   <!-- Ressources statiques: manifest, icônes, socket, graphique, styles -->
   <link rel="manifest" href="/manifest.webmanifest">
@@ -285,12 +286,11 @@
           </div>
         </div>
       </div>
-
       <button class="save-btn" onclick="saveSettings()">💾 Sauvegarder</button>
     </div>
   </section>
 
-  <!-- Bloc historique avec contrôles de zoom -->
+  <!-- Graphique avec contrôles de zoom -->
   <section id="chart-section">
     <div class="section-header">
       <h2>📈 Historique</h2>
@@ -306,6 +306,6 @@
 </main>
 
 <!-- Script applicatif principal (pilotage UI + WebSocket + API) -->
-<script src="app.js"></script>
+<script src="script.js"></script>
 </body>
 </html>
