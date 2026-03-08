@@ -4,7 +4,7 @@
 //Un canal de message permet à la page de forcer l'activation d'un worker en attente pour une mise à jour rapide.
 
 
-const CACHE_NAME = 'plant-pwa-v4';
+const CACHE_NAME = 'plant-pwa-v5';
 // Fichiers cœur de l'application (app shell) pré-cachés.
 const APP_SHELL = [
   '/',
@@ -55,9 +55,26 @@ self.addEventListener('fetch', (event) => {
   const isManifestOrIcon =
     url.pathname === '/manifest.webmanifest' ||
     url.pathname.startsWith('/icons/');
+  const isAppShellAsset =
+    url.pathname === '/script.js' ||
+    url.pathname === '/style.css';
 
   if (isManifestOrIcon) {
     // Manifest/icônes: réseau d'abord pour capter les mises à jour visuelles.
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          const responseClone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone));
+          return response;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  if (isAppShellAsset) {
+    // JS/CSS du shell: réseau d'abord pour éviter les incohérences de version.
     event.respondWith(
       fetch(request)
         .then((response) => {
@@ -95,6 +112,24 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(() => caches.match('/index.html'));
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  // Ramene l'utilisateur vers l'application lors d'un clic notification.
+  event.notification.close();
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      for (const client of windowClients) {
+        if ('focus' in client) return client.focus();
+      }
+      if (clients.openWindow) {
+        const targetUrl = event.notification?.data?.url || '/';
+        return clients.openWindow(targetUrl);
+      }
+      return undefined;
     })
   );
 });

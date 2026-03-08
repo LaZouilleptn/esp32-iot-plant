@@ -7,7 +7,7 @@ Ce dossier contient l’application web Node.js (API REST, WebSocket et bridge M
 - `server.js` : serveur Express + Socket.IO + MQTT + accès PostgreSQL/InfluxDB
 - `package.json` : scripts et dépendances Node.js
 - `Dockerfile` : image de production (Node 18, utilisateur non-root)
-- `public/` : interface web (`index.html`, `style.css`, `app.js`, PWA)
+- `public/` : interface web (`index.html`, `style.css`, `script.js`, PWA)
 
 ## Prérequis
 

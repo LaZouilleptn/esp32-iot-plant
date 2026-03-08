@@ -7,7 +7,6 @@ const { Server } = require("socket.io");
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const fs = require('fs').promises;
 // const nodemailer = require('nodemailer');
 const { Pool } = require('pg');
 const { InfluxDB, Point } = require('@influxdata/influxdb-client');
@@ -15,7 +14,6 @@ const { InfluxDB, Point } = require('@influxdata/influxdb-client');
 // Paramètres de base (peuvent être changés via les variables d'environnement)
 const MQTT_BROKER = process.env.MQTT_BROKER || 'mqtt://localhost:1883';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-const SETTINGS_FILE = process.env.SETTINGS_FILE || './settings.json';
 
 // PostgreSQL stocke les utilisateurs
 // Si DATABASE_URL existe on l'utilise, sinon on lit les champs séparés
@@ -102,6 +100,37 @@ function authenticateToken(req, res, next) {
   }
 }
 
+function normalizeUsername(value) {
+  return String(value || '').trim();
+}
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function validateUsername(username) {
+  return /^[a-zA-Z0-9_.-]{3,32}$/.test(username);
+}
+
+function validateEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function validatePasswordStrength(password) {
+  if (typeof password !== 'string') return false;
+  if (password.length < 10 || password.length > 128) return false;
+  const hasUpper = /[A-Z]/.test(password);
+  const hasLower = /[a-z]/.test(password);
+  const hasDigit = /\d/.test(password);
+  const hasSymbol = /[^A-Za-z0-9]/.test(password);
+  return hasUpper && hasLower && hasDigit && hasSymbol;
+}
+
+async function hasExistingUsers() {
+  const result = await pgPool.query('SELECT 1 FROM users LIMIT 1');
+  return result.rowCount > 0;
+}
+
 // L'historique n'est pas gardé en mémoire, il est lu depuis InfluxDB
 
 // Bloc email prêt mais désactivé
@@ -149,6 +178,7 @@ async function initDatabases() {
     const pgClient = await pgPool.connect();
     console.log('[PostgreSQL] Connecté avec succès');
     pgClient.release();
+    await ensureRelationalSettingsSchema();
   } catch (error) {
     console.error('[PostgreSQL] Erreur de connexion:', error.message);
     console.log('[PostgreSQL] Le serveur continue sans PostgreSQL');
@@ -167,6 +197,9 @@ function saveTelemetryToInflux(data) {
   if (!writeApi) return; // InfluxDB non actif
   
   try {
+    const ledOn = typeof data.led_on === 'boolean' ? data.led_on : false;
+    const fanOn = typeof data.fan_on === 'boolean' ? data.fan_on : false;
+    const humidifierOn = typeof data.humidifier_on === 'boolean' ? data.humidifier_on : false;
     const point = new Point('plant_telemetry')
       .floatField('luminosite', data.luminosite)
       .floatField('humidite_sol', data.humidite_sol)
@@ -175,6 +208,9 @@ function saveTelemetryToInflux(data) {
       .floatField('pressure', data.pressure || 0)
       .intField('rssi', data.rssi)
       .intField('water_full', data.water_full ? 1 : 0)
+      .intField('led_on', ledOn ? 1 : 0)
+      .intField('fan_on', fanOn ? 1 : 0)
+      .intField('humidifier_on', humidifierOn ? 1 : 0)
       .timestamp(new Date());
 
     writeApi.writePoint(point);
@@ -194,15 +230,14 @@ const defaultSettings = {
     lux: { min: 500, max: 10000 },
     soil: { min: 30, max: 70 },
     air: { min: 30, max: 70 },
-    temp: { min: 15, max: 30 },
-    rssi: { min: -70, max: -50 }
+    temp: { min: 15, max: 30 }
   },
   indicators: {
     lux: true,
     soil: true,
+    air: true,
     temp: true,
-    pressure: true,
-    rssi: true
+    pressure: true
   },
   automations: {
     led: false,
@@ -213,6 +248,16 @@ const defaultSettings = {
     led: 1800,
     hum: 20,
     fan: 180
+  },
+  alerts: {
+    rules: {
+      lux: { push: true, email: false, startDelaySec: 30, repeatIntervalSec: 300, mailDelayMin: 2, recoveryResetSec: 90 },
+      soil: { push: true, email: false, startDelaySec: 30, repeatIntervalSec: 300, mailDelayMin: 2, recoveryResetSec: 90 },
+      air: { push: true, email: false, startDelaySec: 30, repeatIntervalSec: 300, mailDelayMin: 2, recoveryResetSec: 90 },
+      temp: { push: true, email: false, startDelaySec: 30, repeatIntervalSec: 300, mailDelayMin: 2, recoveryResetSec: 90 },
+      rssi: { push: true, email: false, startDelaySec: 30, repeatIntervalSec: 300, mailDelayMin: 2, recoveryResetSec: 90 },
+      water: { push: true, email: false, startDelaySec: 30, repeatIntervalSec: 300, mailDelayMin: 2, recoveryResetSec: 90 }
+    }
   }
 };
 
@@ -222,12 +267,13 @@ let currentSettings = { ...defaultSettings };
 // en conservant des types sûrs (nombres/booleans) pour éviter
 // d'écrire des paramètres invalides dans le runtime.
 function mergeSettings(defaults, incoming = {}) {
-  const merged = { thresholds: {}, indicators: {}, automations: {}, automationDurations: {} };
+  const merged = { thresholds: {}, indicators: {}, automations: {}, automationDurations: {}, alerts: {} };
   const durationBounds = {
     led: { min: 10, max: 21600 },
     hum: { min: 5, max: 600 },
     fan: { min: 10, max: 3600 }
   };
+  const notificationMetrics = ['lux', 'soil', 'air', 'temp', 'rssi', 'water'];
 
   for (const key of Object.keys(defaults.thresholds)) {
     const candidate = incoming.thresholds?.[key] || {};
@@ -259,31 +305,256 @@ function mergeSettings(defaults, incoming = {}) {
     merged.automationDurations[key] = Math.min(bounds.max, Math.max(bounds.min, Math.round(val)));
   }
 
+  merged.alerts.rules = {};
+  for (const metric of notificationMetrics) {
+    const incomingRule = incoming.alerts?.rules?.[metric] || {};
+    const legacyAlerts = incoming.alerts || {};
+    const defaultRule = defaults.alerts.rules[metric];
+    const startDelaySec = Number(incomingRule.startDelaySec);
+    const repeatIntervalSec = Number(incomingRule.repeatIntervalSec);
+    const mailDelayMin = Number(incomingRule.mailDelayMin);
+    const legacyPushMailDeltaSec = Number(incomingRule.pushMailDeltaSec);
+    const recoveryResetSec = Number(incomingRule.recoveryResetSec);
+
+    merged.alerts.rules[metric] = {
+      push: typeof incomingRule.push === 'boolean' ? incomingRule.push : (typeof legacyAlerts.push === 'boolean' ? legacyAlerts.push : defaultRule.push),
+      email: typeof incomingRule.email === 'boolean' ? incomingRule.email : (typeof legacyAlerts.email === 'boolean' ? legacyAlerts.email : defaultRule.email),
+      startDelaySec: Number.isFinite(startDelaySec) ? Math.min(3600, Math.max(0, Math.round(startDelaySec))) : defaultRule.startDelaySec,
+      repeatIntervalSec: Number.isFinite(repeatIntervalSec) ? Math.min(21600, Math.max(30, Math.round(repeatIntervalSec))) : defaultRule.repeatIntervalSec,
+      mailDelayMin: Number.isFinite(mailDelayMin) ? Math.min(1440, Math.max(0, Math.round(mailDelayMin))) : defaultRule.mailDelayMin,
+      recoveryResetSec: Number.isFinite(recoveryResetSec) ? Math.min(3600, Math.max(10, Math.round(recoveryResetSec))) : defaultRule.recoveryResetSec
+    };
+
+    if (!Number.isFinite(startDelaySec) && Number.isFinite(Number(legacyAlerts.startDelaySec))) {
+      merged.alerts.rules[metric].startDelaySec = Math.min(3600, Math.max(0, Math.round(Number(legacyAlerts.startDelaySec))));
+    }
+    if (!Number.isFinite(repeatIntervalSec) && Number.isFinite(Number(legacyAlerts.repeatIntervalSec))) {
+      merged.alerts.rules[metric].repeatIntervalSec = Math.min(21600, Math.max(30, Math.round(Number(legacyAlerts.repeatIntervalSec))));
+    }
+    if (!Number.isFinite(mailDelayMin) && Number.isFinite(legacyPushMailDeltaSec)) {
+      merged.alerts.rules[metric].mailDelayMin = Math.min(1440, Math.max(0, Math.round(legacyPushMailDeltaSec / 60)));
+    }
+    if (!Number.isFinite(mailDelayMin) && !Number.isFinite(legacyPushMailDeltaSec) && Number.isFinite(Number(legacyAlerts.mailDelayMin))) {
+      merged.alerts.rules[metric].mailDelayMin = Math.min(1440, Math.max(0, Math.round(Number(legacyAlerts.mailDelayMin))));
+    }
+    if (!Number.isFinite(mailDelayMin) && !Number.isFinite(legacyPushMailDeltaSec) && !Number.isFinite(Number(legacyAlerts.mailDelayMin)) && Number.isFinite(Number(legacyAlerts.pushMailDeltaSec))) {
+      merged.alerts.rules[metric].mailDelayMin = Math.min(1440, Math.max(0, Math.round(Number(legacyAlerts.pushMailDeltaSec) / 60)));
+    }
+    if (!Number.isFinite(recoveryResetSec) && Number.isFinite(Number(legacyAlerts.recoveryResetSec))) {
+      merged.alerts.rules[metric].recoveryResetSec = Math.min(3600, Math.max(10, Math.round(Number(legacyAlerts.recoveryResetSec))));
+    }
+  }
+
   return merged;
 }
 
-// Charge les paramètres depuis le fichier JSON local.
-// Si le fichier est absent/corrompu, on retombe sur la config par défaut.
-async function loadSettingsFromFile() {
+async function ensureRelationalSettingsSchema() {
   try {
-    const raw = await fs.readFile(SETTINGS_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    currentSettings = mergeSettings(defaultSettings, parsed);
-    console.log('[SETTINGS] Paramètres chargés depuis le fichier');
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(50) UNIQUE NOT NULL,
+        email VARCHAR(100) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_login TIMESTAMP,
+        is_active BOOLEAN DEFAULT true
+      )
+    `);
+
+    // Index singleton: impose une seule ligne dans users.
+    // Si une ancienne base contient deja plusieurs users, on loggue et on continue.
+    try {
+      await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_singleton_one_row_idx ON users ((1))');
+    } catch (singletonError) {
+      console.error('[PostgreSQL] Contrainte mono-user non appliquee (nettoyer les users en doublon):', singletonError.message);
+    }
+
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS settings_thresholds (
+        metric VARCHAR(16) PRIMARY KEY,
+        min_value DOUBLE PRECISION NOT NULL,
+        max_value DOUBLE PRECISION NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS settings_automations (
+        device VARCHAR(16) PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT false,
+        duration_sec INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS settings_notifications (
+        metric VARCHAR(16) PRIMARY KEY,
+        push_enabled BOOLEAN NOT NULL DEFAULT true,
+        email_enabled BOOLEAN NOT NULL DEFAULT false,
+        start_delay_sec INTEGER NOT NULL,
+        repeat_interval_sec INTEGER NOT NULL,
+        mail_delay_min INTEGER NOT NULL,
+        recovery_reset_sec INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    for (const metric of ['lux', 'soil', 'air', 'temp']) {
+      const t = defaultSettings.thresholds[metric];
+      await pgPool.query(
+        `INSERT INTO settings_thresholds (metric, min_value, max_value)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (metric) DO NOTHING`,
+        [metric, t.min, t.max]
+      );
+    }
+
+    for (const device of ['led', 'hum', 'fan']) {
+      await pgPool.query(
+        `INSERT INTO settings_automations (device, enabled, duration_sec)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (device) DO NOTHING`,
+        [device, defaultSettings.automations[device], defaultSettings.automationDurations[device]]
+      );
+    }
+
+    for (const metric of ['lux', 'soil', 'air', 'temp', 'rssi', 'water']) {
+      const r = defaultSettings.alerts.rules[metric];
+      await pgPool.query(
+        `INSERT INTO settings_notifications (
+          metric, push_enabled, email_enabled, start_delay_sec, repeat_interval_sec, mail_delay_min, recovery_reset_sec
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (metric) DO NOTHING`,
+        [metric, r.push, r.email, r.startDelaySec, r.repeatIntervalSec, r.mailDelayMin, r.recoveryResetSec]
+      );
+    }
+
+    console.log('[PostgreSQL] Tables de paramètres relationnels prêtes');
   } catch (error) {
-    currentSettings = { ...defaultSettings };
-    console.log('[SETTINGS] Fichier absent ou invalide, utilisation des valeurs par défaut');
+    console.error('[PostgreSQL] Impossible de préparer le schéma de paramètres:', error.message);
   }
 }
 
-// Sauvegarde la configuration courante sur disque pour persistance
-// entre deux redémarrages du serveur.
-async function saveSettingsToFile() {
+async function getSettingsForUser(_userId) {
+  const [thresholdResult, automationResult, notificationResult] = await Promise.all([
+    pgPool.query('SELECT metric, min_value, max_value FROM settings_thresholds'),
+    pgPool.query('SELECT device, enabled, duration_sec FROM settings_automations'),
+    pgPool.query('SELECT metric, push_enabled, email_enabled, start_delay_sec, repeat_interval_sec, mail_delay_min, recovery_reset_sec FROM settings_notifications')
+  ]);
+
+  const incoming = {
+    thresholds: {},
+    indicators: { ...defaultSettings.indicators },
+    automations: {},
+    automationDurations: {},
+    alerts: { rules: {} }
+  };
+
+  for (const metric of ['lux', 'soil', 'air', 'temp']) {
+    incoming.thresholds[metric] = { ...defaultSettings.thresholds[metric] };
+  }
+
+  for (const device of ['led', 'hum', 'fan']) {
+    incoming.automations[device] = defaultSettings.automations[device];
+    incoming.automationDurations[device] = defaultSettings.automationDurations[device];
+  }
+
+  for (const metric of ['lux', 'soil', 'air', 'temp', 'rssi', 'water']) {
+    incoming.alerts.rules[metric] = { ...defaultSettings.alerts.rules[metric] };
+  }
+
+  for (const row of thresholdResult.rows) {
+    if (!Object.prototype.hasOwnProperty.call(incoming.thresholds, row.metric)) continue;
+    incoming.thresholds[row.metric] = {
+      min: Number(row.min_value),
+      max: Number(row.max_value)
+    };
+  }
+
+  for (const row of automationResult.rows) {
+    if (!Object.prototype.hasOwnProperty.call(incoming.automations, row.device)) continue;
+    incoming.automations[row.device] = Boolean(row.enabled);
+    incoming.automationDurations[row.device] = Number(row.duration_sec);
+  }
+
+  for (const row of notificationResult.rows) {
+    if (!Object.prototype.hasOwnProperty.call(incoming.alerts.rules, row.metric)) continue;
+    incoming.alerts.rules[row.metric] = {
+      push: Boolean(row.push_enabled),
+      email: Boolean(row.email_enabled),
+      startDelaySec: Number(row.start_delay_sec),
+      repeatIntervalSec: Number(row.repeat_interval_sec),
+      mailDelayMin: Number(row.mail_delay_min),
+      recoveryResetSec: Number(row.recovery_reset_sec)
+    };
+  }
+
+  // Les cloches du tab Seuils suivent les règles push des métriques communes.
+  for (const metric of ['lux', 'soil', 'air', 'temp']) {
+    incoming.indicators[metric] = Boolean(incoming.alerts.rules[metric]?.push);
+  }
+
+  return mergeSettings(defaultSettings, incoming);
+}
+
+async function upsertSettingsForUser(_userId, incomingSettings) {
+  const merged = mergeSettings(defaultSettings, incomingSettings || {});
+
+  await pgPool.query('BEGIN');
   try {
-    await fs.writeFile(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2), 'utf8');
-    console.log('[SETTINGS] Paramètres sauvegardés');
+    for (const metric of ['lux', 'soil', 'air', 'temp']) {
+      await pgPool.query(
+        `INSERT INTO settings_thresholds (metric, min_value, max_value, updated_at)
+         VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+         ON CONFLICT (metric) DO UPDATE SET
+           min_value = EXCLUDED.min_value,
+           max_value = EXCLUDED.max_value,
+           updated_at = CURRENT_TIMESTAMP`,
+        [metric, merged.thresholds[metric].min, merged.thresholds[metric].max]
+      );
+    }
+
+    for (const device of ['led', 'hum', 'fan']) {
+      await pgPool.query(
+        `INSERT INTO settings_automations (device, enabled, duration_sec, updated_at)
+         VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+         ON CONFLICT (device) DO UPDATE SET
+           enabled = EXCLUDED.enabled,
+           duration_sec = EXCLUDED.duration_sec,
+           updated_at = CURRENT_TIMESTAMP`,
+        [device, merged.automations[device], merged.automationDurations[device]]
+      );
+    }
+
+    for (const metric of ['lux', 'soil', 'air', 'temp', 'rssi', 'water']) {
+      const rule = merged.alerts.rules[metric];
+      await pgPool.query(
+        `INSERT INTO settings_notifications (
+          metric, push_enabled, email_enabled, start_delay_sec, repeat_interval_sec, mail_delay_min, recovery_reset_sec, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+        ON CONFLICT (metric) DO UPDATE SET
+          push_enabled = EXCLUDED.push_enabled,
+          email_enabled = EXCLUDED.email_enabled,
+          start_delay_sec = EXCLUDED.start_delay_sec,
+          repeat_interval_sec = EXCLUDED.repeat_interval_sec,
+          mail_delay_min = EXCLUDED.mail_delay_min,
+          recovery_reset_sec = EXCLUDED.recovery_reset_sec,
+          updated_at = CURRENT_TIMESTAMP`,
+        [metric, rule.push, rule.email, rule.startDelaySec, rule.repeatIntervalSec, rule.mailDelayMin, rule.recoveryResetSec]
+      );
+    }
+
+    await pgPool.query('COMMIT');
+    return merged;
   } catch (error) {
-    console.error('[SETTINGS] Erreur sauvegarde:', error.message);
+    await pgPool.query('ROLLBACK');
+    throw error;
   }
 }
 
@@ -432,17 +703,27 @@ io.on('connection', (socket) => {
 
 // API HTTP
 
-app.get('/api/settings', authenticateToken, (req, res) => {
+app.get('/api/settings', authenticateToken, async (req, res) => {
   // Retourne la configuration active à un utilisateur authentifié.
-  res.json(currentSettings);
+  try {
+    currentSettings = await getSettingsForUser(req.user.id);
+    res.json(currentSettings);
+  } catch (error) {
+    console.error('[SETTINGS] Lecture tables settings_* échouée:', error.message);
+    res.status(503).json({ error: 'Base de données indisponible pour charger les paramètres' });
+  }
 });
 
 app.post('/api/settings', authenticateToken, async (req, res) => {
-  // Met à jour les paramètres depuis l'UI puis les persiste sur disque.
-  currentSettings = mergeSettings(defaultSettings, req.body || {});
-  await saveSettingsToFile();
-  io.emit('settings_updated', currentSettings);
-  res.json({ message: 'Paramètres mis à jour', settings: currentSettings });
+  // Met à jour les paramètres utilisateur puis les persiste en base.
+  try {
+    currentSettings = await upsertSettingsForUser(req.user.id, req.body || {});
+    io.emit('settings_updated', currentSettings);
+    res.json({ message: 'Paramètres mis à jour', settings: currentSettings });
+  } catch (error) {
+    console.error('[SETTINGS] Écriture tables settings_* échouée:', error.message);
+    res.status(503).json({ error: 'Base de données indisponible pour sauvegarder les paramètres' });
+  }
 });
 
 // Retourne l'historique des mesures
@@ -541,6 +822,75 @@ app.get('/api/stats', async (req, res) => {
 
 // API de connexion utilisateur
 
+app.get('/api/auth/bootstrap-status', async (req, res) => {
+  try {
+    const hasUser = await hasExistingUsers();
+    res.json({ mode: hasUser ? 'login' : 'bootstrap' });
+  } catch (error) {
+    console.error('[AUTH] Erreur bootstrap-status:', error.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.post('/api/auth/bootstrap-register', async (req, res) => {
+  try {
+    await pgPool.query('BEGIN');
+    await pgPool.query('LOCK TABLE users IN EXCLUSIVE MODE');
+
+    const exists = await hasExistingUsers();
+    if (exists) {
+      await pgPool.query('ROLLBACK');
+      return res.status(403).json({ error: 'Compte initial déjà créé' });
+    }
+
+    const username = normalizeUsername(req.body?.username);
+    const email = normalizeEmail(req.body?.email);
+    const password = req.body?.password;
+    const passwordConfirm = req.body?.passwordConfirm;
+
+    if (!username || !email || !password || !passwordConfirm) {
+      return res.status(400).json({ error: 'Tous les champs sont requis' });
+    }
+
+    if (!validateUsername(username)) {
+      return res.status(400).json({ error: 'Nom utilisateur invalide (3-32, lettres/chiffres/._-)' });
+    }
+
+    if (!validateEmail(email)) {
+      return res.status(400).json({ error: 'Email invalide' });
+    }
+
+    if (password !== passwordConfirm) {
+      return res.status(400).json({ error: 'Les mots de passe ne correspondent pas' });
+    }
+
+    if (!validatePasswordStrength(password)) {
+      return res.status(400).json({ error: 'Mot de passe trop faible (10+ chars, maj/min/chiffre/symbole)' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const insert = await pgPool.query(
+      'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id, username',
+      [username, email, hashedPassword]
+    );
+
+    const user = insert.rows[0];
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+
+    await pgPool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
+    await pgPool.query('COMMIT');
+
+    return res.status(201).json({ token, username: user.username });
+  } catch (error) {
+    try { await pgPool.query('ROLLBACK'); } catch (_) {}
+    if (error.code === '23505') {
+      return res.status(400).json({ error: 'Username ou email déjà utilisé' });
+    }
+    console.error('[AUTH] Erreur bootstrap-register:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 // Se connecter
 app.post('/api/login', async (req, res) => {
   // Vérifie les identifiants utilisateur et émet un JWT signé (7 jours).
@@ -596,25 +946,47 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    const { username, password, email } = req.body;
+    await pgPool.query('BEGIN');
+    await pgPool.query('LOCK TABLE users IN EXCLUSIVE MODE');
+
+    const exists = await hasExistingUsers();
+    if (exists) {
+      await pgPool.query('ROLLBACK');
+      return res.status(403).json({ error: 'Inscription publique désactivée après création du premier compte' });
+    }
+
+    const username = normalizeUsername(req.body?.username);
+    const email = normalizeEmail(req.body?.email);
+    const password = req.body?.password;
 
     if (!username || !password || !email) {
       return res.status(400).json({ error: 'Tous les champs sont requis' });
     }
 
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Le mot de passe doit avoir au moins 6 caractères' });
+    if (!validateUsername(username)) {
+      return res.status(400).json({ error: 'Nom utilisateur invalide (3-32, lettres/chiffres/._-)' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    if (!validateEmail(email)) {
+      return res.status(400).json({ error: 'Email invalide' });
+    }
+
+    if (!validatePasswordStrength(password)) {
+      return res.status(400).json({ error: 'Mot de passe trop faible (10+ chars, maj/min/chiffre/symbole)' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
 
     const result = await pgPool.query(
       'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id, username',
       [username, email, hashedPassword]
     );
 
+    await pgPool.query('COMMIT');
+
     res.status(201).json({ message: 'Utilisateur créé', username: result.rows[0].username });
   } catch (error) {
+    try { await pgPool.query('ROLLBACK'); } catch (_) {}
     if (error.code === '23505') {
       return res.status(400).json({ error: 'Username ou email déjà utilisé' });
     }
@@ -625,13 +997,163 @@ app.post('/api/register', async (req, res) => {
 
 // Se déconnecter
 app.post('/api/logout', authenticateToken, async (req, res) => {
-  // Invalide une session stockée en base (si table sessions utilisée).
+  // JWT stateless: côté serveur, rien à invalider en base.
+  res.json({ message: 'Déconnecté' });
+});
+
+app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
-    const token = req.headers['authorization'].split(' ')[1];
-    await pgPool.query('DELETE FROM sessions WHERE token = $1', [token]);
-    res.json({ message: 'Déconnecté' });
+    const userResult = await pgPool.query(
+      'SELECT id, username, email, created_at, updated_at, last_login FROM users WHERE id = $1 AND is_active = true',
+      [req.user.id]
+    );
+
+    if (userResult.rowCount === 0) {
+      return res.status(404).json({ error: 'Utilisateur introuvable' });
+    }
+
+    const settingsTsResult = await pgPool.query(`
+      SELECT MAX(updated_at) AS ts FROM (
+        SELECT updated_at FROM settings_thresholds
+        UNION ALL
+        SELECT updated_at FROM settings_automations
+        UNION ALL
+        SELECT updated_at FROM settings_notifications
+      ) s
+    `);
+
+    const user = userResult.rows[0];
+    res.json({
+      username: user.username,
+      email: user.email,
+      createdAt: user.created_at,
+      updatedAt: user.updated_at,
+      lastLogin: user.last_login,
+      settingsUpdatedAt: settingsTsResult.rows[0]?.ts || null
+    });
   } catch (error) {
+    console.error('[PROFILE] Erreur lecture profil:', error.message);
     res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.put('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const username = normalizeUsername(req.body?.username);
+    const email = normalizeEmail(req.body?.email);
+    const currentPassword = req.body?.currentPassword;
+    const newPassword = req.body?.newPassword;
+    const newPasswordConfirm = req.body?.newPasswordConfirm;
+
+    if (!username || !email || !currentPassword) {
+      return res.status(400).json({ error: 'Nom, email et mot de passe actuel requis' });
+    }
+
+    if (!validateUsername(username)) {
+      return res.status(400).json({ error: 'Nom utilisateur invalide (3-32, lettres/chiffres/._-)' });
+    }
+
+    if (!validateEmail(email)) {
+      return res.status(400).json({ error: 'Email invalide' });
+    }
+
+    if (newPassword || newPasswordConfirm) {
+      if (!newPassword || !newPasswordConfirm) {
+        return res.status(400).json({ error: 'Nouveau mot de passe incomplet' });
+      }
+      if (newPassword !== newPasswordConfirm) {
+        return res.status(400).json({ error: 'Les nouveaux mots de passe ne correspondent pas' });
+      }
+      if (!validatePasswordStrength(newPassword)) {
+        return res.status(400).json({ error: 'Nouveau mot de passe trop faible (10+ chars, maj/min/chiffre/symbole)' });
+      }
+    }
+
+    const userResult = await pgPool.query(
+      'SELECT id, username, password_hash FROM users WHERE id = $1 AND is_active = true',
+      [req.user.id]
+    );
+
+    if (userResult.rowCount === 0) {
+      return res.status(404).json({ error: 'Utilisateur introuvable' });
+    }
+
+    const user = userResult.rows[0];
+    const validCurrentPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!validCurrentPassword) {
+      return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+    }
+
+    const nextPasswordHash = newPassword ? await bcrypt.hash(newPassword, 12) : user.password_hash;
+
+    await pgPool.query(
+      'UPDATE users SET username = $1, email = $2, password_hash = $3 WHERE id = $4',
+      [username, email, nextPasswordHash, user.id]
+    );
+
+    const freshProfile = await pgPool.query(
+      'SELECT username, email, created_at, updated_at, last_login FROM users WHERE id = $1',
+      [user.id]
+    );
+
+    const settingsTsResult = await pgPool.query(`
+      SELECT MAX(updated_at) AS ts FROM (
+        SELECT updated_at FROM settings_thresholds
+        UNION ALL
+        SELECT updated_at FROM settings_automations
+        UNION ALL
+        SELECT updated_at FROM settings_notifications
+      ) s
+    `);
+
+    const refreshed = freshProfile.rows[0];
+    const token = jwt.sign({ id: user.id, username: refreshed.username }, JWT_SECRET, { expiresIn: '7d' });
+
+    return res.json({
+      token,
+      username: refreshed.username,
+      email: refreshed.email,
+      createdAt: refreshed.created_at,
+      updatedAt: refreshed.updated_at,
+      lastLogin: refreshed.last_login,
+      settingsUpdatedAt: settingsTsResult.rows[0]?.ts || null
+    });
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(400).json({ error: 'Username ou email déjà utilisé' });
+    }
+    console.error('[PROFILE] Erreur update profil:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.delete('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const currentPassword = req.body?.currentPassword;
+    if (!currentPassword) {
+      return res.status(400).json({ error: 'Mot de passe actuel requis' });
+    }
+
+    const userResult = await pgPool.query(
+      'SELECT id, username, password_hash FROM users WHERE id = $1 AND is_active = true',
+      [req.user.id]
+    );
+
+    if (userResult.rowCount === 0) {
+      return res.status(404).json({ error: 'Utilisateur introuvable' });
+    }
+
+    const user = userResult.rows[0];
+    const validCurrentPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!validCurrentPassword) {
+      return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+    }
+
+    await pgPool.query('DELETE FROM users WHERE id = $1', [user.id]);
+    return res.json({ message: 'Compte supprimé' });
+  } catch (error) {
+    console.error('[PROFILE] Erreur suppression profil:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
@@ -682,6 +1204,11 @@ app.get('/api/admin/users', requireAdminToken, async (req, res) => {
 app.post('/api/admin/users', requireAdminToken, async (req, res) => {
   // Endpoint admin pour créer un utilisateur (hash bcrypt côté serveur).
   try {
+    const exists = await hasExistingUsers();
+    if (exists) {
+      return res.status(403).json({ error: 'Mode mono-user: un compte existe déjà' });
+    }
+
     const { username, password, email } = req.body;
 
     if (!username || !password || !email) {
@@ -731,20 +1258,7 @@ app.delete('/api/admin/users/:id', requireAdminToken, async (req, res) => {
 
 // Suppression utilisateur (bloquée en production)
 app.delete('/api/users/:id', async (req, res) => {
-  // Suppression "standard" désactivée en production pour sécurité.
-  // En production, la suppression directe est désactivée
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ error: 'Suppression désactivée en production' });
-  }
-
-  try {
-    const { id } = req.params;
-    await pgPool.query('DELETE FROM users WHERE id = $1', [id]);
-    res.json({ message: 'Utilisateur supprimé' });
-  } catch (error) {
-    console.error('[API] Erreur suppression user:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
-  }
+  return res.status(403).json({ error: 'Endpoint désactivé. Utiliser /api/profile avec mot de passe.' });
 });
 
 app.get('/health', (req, res) => {
@@ -753,7 +1267,7 @@ app.get('/health', (req, res) => {
     status: 'ok',
     mqtt: client.connected,
     postgres: pgPool.totalCount > 0,
-    influxdb: true,
+    influxdb: Boolean(queryApi),
     uptime: process.uptime()
   });
 });
@@ -764,7 +1278,7 @@ const HOST = '0.0.0.0'; // Rend le service accessible depuis le réseau
 
 async function startServer() {
   // Démarrage ordonné : paramètres -> bases -> écoute HTTP/WebSocket.
-  await loadSettingsFromFile();
+  currentSettings = mergeSettings(defaultSettings, {});
   await initDatabases();
   
   server.listen(PORT, HOST, () => {

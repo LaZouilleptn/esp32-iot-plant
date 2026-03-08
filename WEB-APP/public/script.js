@@ -2,12 +2,25 @@
 // Ce fichier gère la connexion utilisateur, les données en direct et le graphique.
 // Connexion WebSocket et variables globales
 const socket = io({ reconnection: true, reconnectionDelay: 1000 });
+const RSSI_FIXED_RANGE = { min: -90, max: -30 };
+const RSSI_ALERT_THRESHOLD = -85;
+const NOTIFICATION_METRICS = ['lux', 'soil', 'air', 'temp', 'rssi', 'water'];
+const LINKED_THRESHOLD_METRICS = ['lux', 'soil', 'air', 'temp'];
+const NOTIFICATION_RULE_DEFAULTS = {
+  push: true,
+  email: false,
+  startDelaySec: 30,
+  repeatIntervalSec: 300,
+  mailDelayMin: 2,
+  recoveryResetSec: 90
+};
 let chart = null;
 let states = { led: false, hum: false, fan: false };
 let automationStates = { led: false, hum: false, fan: false };
 let token = localStorage.getItem('auth_token');
 let currentUsername = localStorage.getItem('username');
 let isAuthenticated = false;
+let authMode = 'login';
 let chartData = null;
 let latestTelemetry = null;
 const defaultSettings = {
@@ -15,15 +28,14 @@ const defaultSettings = {
     lux: { min: 500, max: 10000 },
     soil: { min: 30, max: 70 },
     air: { min: 30, max: 70 },
-    temp: { min: 15, max: 30 },
-    rssi: { min: -70, max: -50 }
+    temp: { min: 15, max: 30 }
   },
   indicators: {
     lux: true,
     soil: true,
+    air: true,
     temp: true,
-    pressure: true,
-    rssi: true
+    pressure: true
   },
   automations: {
     led: false,
@@ -34,6 +46,16 @@ const defaultSettings = {
     led: 1800,
     hum: 20,
     fan: 180
+  },
+  alerts: {
+    rules: {
+      lux: { ...NOTIFICATION_RULE_DEFAULTS },
+      soil: { ...NOTIFICATION_RULE_DEFAULTS },
+      air: { ...NOTIFICATION_RULE_DEFAULTS },
+      temp: { ...NOTIFICATION_RULE_DEFAULTS },
+      rssi: { ...NOTIFICATION_RULE_DEFAULTS },
+      water: { ...NOTIFICATION_RULE_DEFAULTS }
+    }
   }
 };
 let settingsCache = JSON.parse(JSON.stringify(defaultSettings));
@@ -53,6 +75,16 @@ const ZOOM_MULTIPLIER = 1.2; // Zoom de 20% à chaque action
 const LOGIN_COLLAPSED_CLASS = 'is-collapsed';
 let deferredInstallPrompt = null;
 let installPromptTriggered = false;
+let swRegistrationRef = null;
+let pushPermissionAsked = false;
+const alertRuntimeState = new Map();
+
+const ALERT_POLICY_BOUNDS = {
+  startDelaySec: { min: 0, max: 3600 },
+  repeatIntervalSec: { min: 30, max: 21600 },
+  mailDelayMin: { min: 0, max: 1440 },
+  recoveryResetSec: { min: 10, max: 3600 }
+};
 
 // Attache des interactions utilisateur natives (clic/touche)
 // pour déclencher l'installation PWA au bon moment navigateur.
@@ -76,6 +108,234 @@ function attachNativeInstallPrompt() {
   window.addEventListener('keydown', triggerPrompt, { once: true, capture: true });
 }
 
+// Demande l'autorisation navigateur pour les notifications push locales.
+async function ensurePushPermission() {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission === 'denied') return false;
+  if (pushPermissionAsked) return false;
+
+  pushPermissionAsked = true;
+  try {
+    const permission = await Notification.requestPermission();
+    return permission === 'granted';
+  } catch (_) {
+    return false;
+  }
+}
+
+function getTelemetryPushAlerts(data) {
+  const alerts = [];
+  const thresholds = settingsCache.thresholds;
+  const rules = settingsCache.alerts?.rules || {};
+
+  const lux = Number(data.luminosite);
+  if (rules.lux?.push || rules.lux?.email) {
+    if (Number.isFinite(lux) && lux < thresholds.lux.min) {
+      alerts.push({ key: 'lux', title: 'Alerte luminosite basse', body: `Luminosite: ${Math.round(lux)} lux (min ${thresholds.lux.min})` });
+    } else if (Number.isFinite(lux) && lux > thresholds.lux.max) {
+      alerts.push({ key: 'lux', title: 'Alerte luminosite haute', body: `Luminosite: ${Math.round(lux)} lux (max ${thresholds.lux.max})` });
+    }
+  }
+
+  const soil = Number(data.humidite_sol);
+  if ((rules.soil?.push || rules.soil?.email) && Number.isFinite(soil) && soil < thresholds.soil.min) {
+    alerts.push({ key: 'soil', title: 'Alerte humidite sol', body: `Humidite sol: ${Math.round(soil)}% (min ${thresholds.soil.min}%)` });
+  }
+
+  const air = Number(data.humidite_air);
+  if (rules.air?.push || rules.air?.email) {
+    if (Number.isFinite(air) && air < thresholds.air.min) {
+      alerts.push({ key: 'air', title: 'Alerte humidite air basse', body: `Humidite air: ${Math.round(air)}% (min ${thresholds.air.min}%)` });
+    } else if (Number.isFinite(air) && air > thresholds.air.max) {
+      alerts.push({ key: 'air', title: 'Alerte humidite air haute', body: `Humidite air: ${Math.round(air)}% (max ${thresholds.air.max}%)` });
+    }
+  }
+
+  const temp = Number(data.temperature);
+  if (rules.temp?.push || rules.temp?.email) {
+    if (Number.isFinite(temp) && temp < thresholds.temp.min) {
+      alerts.push({ key: 'temp', title: 'Alerte temperature basse', body: `Temperature: ${Math.round(temp)} C (min ${thresholds.temp.min} C)` });
+    } else if (Number.isFinite(temp) && temp > thresholds.temp.max) {
+      alerts.push({ key: 'temp', title: 'Alerte temperature haute', body: `Temperature: ${Math.round(temp)} C (max ${thresholds.temp.max} C)` });
+    }
+  }
+
+  const rssi = Number(data.rssi);
+  if ((rules.rssi?.push || rules.rssi?.email) && Number.isFinite(rssi) && rssi <= RSSI_ALERT_THRESHOLD) {
+    alerts.push({ key: 'rssi', title: 'Alerte signal WiFi', body: `Signal faible: ${Math.round(rssi)} dB (seuil ${RSSI_ALERT_THRESHOLD} dB)` });
+  }
+
+  if ((rules.water?.push || rules.water?.email) && data.water_full === false) {
+    alerts.push({ key: 'water', title: 'Alerte reservoir', body: 'Reservoir d eau vide - verifier le niveau.' });
+  }
+
+  return alerts;
+}
+
+async function pushNotify(title, body, tag) {
+  const permissionOk = await ensurePushPermission();
+  if (!permissionOk) return;
+
+  const options = {
+    body,
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    tag,
+    renotify: true,
+    data: { url: '/' }
+  };
+
+  try {
+    if (swRegistrationRef) {
+      await swRegistrationRef.showNotification(title, options);
+      return;
+    }
+  } catch (_) {
+    // Fallback ci-dessous
+  }
+
+  try {
+    new Notification(title, options);
+  } catch (_) {
+    // navigateur non compatible, on ignore silencieusement
+  }
+}
+
+function maybeSendPushAlerts(data) {
+  const hasEnabledChannel = NOTIFICATION_METRICS.some((metric) => {
+    const rule = settingsCache.alerts?.rules?.[metric];
+    return Boolean(rule?.push || rule?.email);
+  });
+  if (!hasEnabledChannel) return;
+
+  const now = Date.now();
+  const alerts = getTelemetryPushAlerts(data);
+  const activeKeys = new Set(alerts.map((alertItem) => alertItem.key));
+
+  for (const [key, state] of alertRuntimeState.entries()) {
+    const rule = settingsCache.alerts?.rules?.[key] || NOTIFICATION_RULE_DEFAULTS;
+    const recoveryResetMs = sanitizeAlertSeconds(
+      rule.recoveryResetSec,
+      NOTIFICATION_RULE_DEFAULTS.recoveryResetSec,
+      ALERT_POLICY_BOUNDS.recoveryResetSec.min,
+      ALERT_POLICY_BOUNDS.recoveryResetSec.max
+    ) * 1000;
+
+    if (activeKeys.has(key)) {
+      state.recoveredAt = 0;
+      continue;
+    }
+
+    if (!state.recoveredAt) {
+      state.recoveredAt = now;
+      continue;
+    }
+
+    if (now - state.recoveredAt >= recoveryResetMs) {
+      alertRuntimeState.delete(key);
+    }
+  }
+
+  for (const alertItem of alerts) {
+    const rule = settingsCache.alerts?.rules?.[alertItem.key] || NOTIFICATION_RULE_DEFAULTS;
+    const startDelayMs = sanitizeAlertSeconds(
+      rule.startDelaySec,
+      NOTIFICATION_RULE_DEFAULTS.startDelaySec,
+      ALERT_POLICY_BOUNDS.startDelaySec.min,
+      ALERT_POLICY_BOUNDS.startDelaySec.max
+    ) * 1000;
+    const repeatIntervalMs = sanitizeAlertSeconds(
+      rule.repeatIntervalSec,
+      NOTIFICATION_RULE_DEFAULTS.repeatIntervalSec,
+      ALERT_POLICY_BOUNDS.repeatIntervalSec.min,
+      ALERT_POLICY_BOUNDS.repeatIntervalSec.max
+    ) * 1000;
+    const mailDelayMs = sanitizeAlertSeconds(
+      rule.mailDelayMin,
+      NOTIFICATION_RULE_DEFAULTS.mailDelayMin,
+      ALERT_POLICY_BOUNDS.mailDelayMin.min,
+      ALERT_POLICY_BOUNDS.mailDelayMin.max
+    ) * 60 * 1000;
+
+    const state = alertRuntimeState.get(alertItem.key) || {
+      firstDetectedAt: now,
+      lastPushAt: 0,
+      lastEmailAt: 0,
+      recoveredAt: 0
+    };
+
+    if (!alertRuntimeState.has(alertItem.key)) {
+      alertRuntimeState.set(alertItem.key, state);
+    }
+
+    if (!state.firstDetectedAt) {
+      state.firstDetectedAt = now;
+    }
+
+    const problemDurationMs = now - state.firstDetectedAt;
+    if (problemDurationMs < startDelayMs) continue;
+
+    const canSendPush = rule.push && (state.lastPushAt === 0 || (now - state.lastPushAt) >= repeatIntervalMs);
+    if (canSendPush) {
+      state.lastPushAt = now;
+      pushNotify(alertItem.title, alertItem.body, alertItem.key);
+    }
+
+    const canSendEmail = rule.email && (state.lastEmailAt === 0 || (now - state.lastEmailAt) >= repeatIntervalMs);
+    if (canSendEmail) {
+      if ((now - state.firstDetectedAt) >= mailDelayMs) {
+        state.lastEmailAt = now;
+        // Backend email currently en standby: garde la logique de timing pour activation future.
+      }
+    }
+  }
+}
+
+function sanitizeAlertSeconds(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function getAlertSettingsFromUi() {
+  const rules = {};
+
+  for (const metric of NOTIFICATION_METRICS) {
+    const current = settingsCache.alerts?.rules?.[metric] || NOTIFICATION_RULE_DEFAULTS;
+    rules[metric] = {
+      push: Boolean(document.getElementById(`notif-push-${metric}`)?.classList.contains('active')),
+      email: Boolean(document.getElementById(`notif-mail-${metric}`)?.classList.contains('active')),
+      startDelaySec: sanitizeAlertSeconds(
+        document.getElementById(`notif-start-${metric}`)?.value,
+        current.startDelaySec,
+        ALERT_POLICY_BOUNDS.startDelaySec.min,
+        ALERT_POLICY_BOUNDS.startDelaySec.max
+      ),
+      repeatIntervalSec: sanitizeAlertSeconds(
+        document.getElementById(`notif-repeat-${metric}`)?.value,
+        current.repeatIntervalSec,
+        ALERT_POLICY_BOUNDS.repeatIntervalSec.min,
+        ALERT_POLICY_BOUNDS.repeatIntervalSec.max
+      ),
+      mailDelayMin: sanitizeAlertSeconds(
+        document.getElementById(`notif-delta-${metric}`)?.value,
+        current.mailDelayMin,
+        ALERT_POLICY_BOUNDS.mailDelayMin.min,
+        ALERT_POLICY_BOUNDS.mailDelayMin.max
+      ),
+      recoveryResetSec: sanitizeAlertSeconds(
+        document.getElementById(`notif-reset-${metric}`)?.value,
+        current.recoveryResetSec,
+        ALERT_POLICY_BOUNDS.recoveryResetSec.min,
+        ALERT_POLICY_BOUNDS.recoveryResetSec.max
+      )
+    };
+  }
+
+  return { rules };
+}
+
 // === Fonctions de connexion utilisateur ===
 // Affiche/masque le message d'erreur dans le panneau de connexion.
 function setLoginError(msg) {
@@ -86,6 +346,50 @@ function setLoginError(msg) {
   } else {
     el.textContent = '';
     el.style.display = 'none';
+  }
+}
+
+function updateAuthModeUi() {
+  const loginToggle = document.getElementById('login-toggle-btn');
+  const emailInput = document.getElementById('email');
+  const confirmInput = document.getElementById('password-confirm');
+  const hint = document.getElementById('auth-mode-hint');
+
+  const isBootstrap = authMode === 'bootstrap';
+
+  if (loginToggle) {
+    loginToggle.textContent = isBootstrap ? 'Créer le compte admin' : 'Connexion';
+  }
+  if (emailInput) {
+    emailInput.style.display = isBootstrap ? 'block' : 'none';
+    emailInput.required = isBootstrap;
+  }
+  if (confirmInput) {
+    confirmInput.style.display = isBootstrap ? 'block' : 'none';
+    confirmInput.required = isBootstrap;
+  }
+  if (hint) {
+    hint.textContent = isBootstrap
+      ? 'Première initialisation: créez le compte administrateur.'
+      : 'Connectez-vous avec votre compte existant.';
+  }
+}
+
+async function detectAuthMode() {
+  try {
+    const res = await fetch('/api/auth/bootstrap-status');
+    if (!res.ok) {
+      authMode = 'login';
+      updateAuthModeUi();
+      return;
+    }
+
+    const payload = await res.json();
+    authMode = payload?.mode === 'bootstrap' ? 'bootstrap' : 'login';
+    updateAuthModeUi();
+  } catch (_) {
+    authMode = 'login';
+    updateAuthModeUi();
   }
 }
 
@@ -136,9 +440,153 @@ function showAuthInfo() {
   if (authStatus) {
     authStatus.style.display = 'flex';
     authStatus.innerHTML = `
-      <span class="user-chip">👤 ${currentUsername}</span>
+      <button type="button" class="user-chip" onclick="toggleProfileSection()" title="Ouvrir le profil">👤 ${currentUsername}</button>
       <button class="logout-btn" onclick="logout()">Déconnexion</button>
     `;
+  }
+}
+
+function setProfileMessage(msg, isError = false) {
+  const el = document.getElementById('profile-message');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.style.color = isError ? '#ef4444' : '#94a3b8';
+}
+
+function formatTimestamp(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString('fr-FR');
+}
+
+async function loadProfile() {
+  if (!token) return;
+  try {
+    const res = await fetch('/api/profile', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+
+    const payload = await res.json();
+    if (!res.ok) {
+      setProfileMessage(payload.error || 'Erreur de chargement du profil', true);
+      return;
+    }
+
+    document.getElementById('profile-username').value = payload.username || '';
+    document.getElementById('profile-email').value = payload.email || '';
+    document.getElementById('profile-created-at').textContent = formatTimestamp(payload.createdAt);
+    document.getElementById('profile-updated-at').textContent = formatTimestamp(payload.updatedAt);
+    document.getElementById('profile-last-login').textContent = formatTimestamp(payload.lastLogin);
+    document.getElementById('profile-settings-updated-at').textContent = formatTimestamp(payload.settingsUpdatedAt);
+    setProfileMessage('');
+  } catch (_) {
+    setProfileMessage('Erreur réseau', true);
+  }
+}
+
+async function saveProfile() {
+  if (!isAuthenticated || !token) return;
+
+  const username = document.getElementById('profile-username')?.value.trim() || '';
+  const email = document.getElementById('profile-email')?.value.trim() || '';
+  const currentPassword = document.getElementById('profile-current-password')?.value || '';
+  const newPassword = document.getElementById('profile-new-password')?.value || '';
+  const newPasswordConfirm = document.getElementById('profile-new-password-confirm')?.value || '';
+
+  if (!username || !email || !currentPassword) {
+    setProfileMessage('Nom, email et mot de passe actuel sont requis', true);
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/profile', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ username, email, currentPassword, newPassword, newPasswordConfirm })
+    });
+
+    const payload = await res.json();
+    if (!res.ok) {
+      setProfileMessage(payload.error || 'Erreur de mise à jour du profil', true);
+      return;
+    }
+
+    if (payload.token) {
+      token = payload.token;
+      localStorage.setItem('auth_token', token);
+      socket.emit('auth', token);
+    }
+    if (payload.username) {
+      currentUsername = payload.username;
+      localStorage.setItem('username', currentUsername);
+      showAuthInfo();
+    }
+
+    document.getElementById('profile-current-password').value = '';
+    document.getElementById('profile-new-password').value = '';
+    document.getElementById('profile-new-password-confirm').value = '';
+    setProfileMessage('Profil mis à jour avec succès');
+    await loadProfile();
+  } catch (_) {
+    setProfileMessage('Erreur réseau', true);
+  }
+}
+
+async function deleteAccount() {
+  if (!isAuthenticated || !token) return;
+
+  const currentPassword = document.getElementById('profile-current-password')?.value || '';
+  if (!currentPassword) {
+    setProfileMessage('Mot de passe actuel requis pour supprimer le compte', true);
+    return;
+  }
+
+  const confirmed = window.confirm('Supprimer définitivement ce compte ? Cette action est irreversible.');
+  if (!confirmed) return;
+
+  try {
+    const res = await fetch('/api/profile', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ currentPassword })
+    });
+
+    const payload = await res.json();
+    if (!res.ok) {
+      setProfileMessage(payload.error || 'Erreur suppression compte', true);
+      return;
+    }
+
+    setProfileMessage('Compte supprimé. Déconnexion...');
+    logout();
+    detectAuthMode();
+  } catch (_) {
+    setProfileMessage('Erreur réseau', true);
+  }
+}
+
+function toggleProfileSection() {
+  if (!isAuthenticated) return;
+  const profileSection = document.getElementById('profile-section');
+  const settingsSection = document.getElementById('settings-section');
+  if (!profileSection) return;
+
+  const willOpen = !profileSection.classList.contains('visible');
+  profileSection.classList.toggle('visible', willOpen);
+
+  if (settingsSection && willOpen) {
+    settingsSection.classList.remove('visible');
+  }
+
+  if (willOpen) {
+    loadProfile();
   }
 }
 
@@ -154,15 +602,18 @@ function logout() {
   const authStatus = document.getElementById('auth-status');
   const loginFields = document.getElementById('login-fields');
   const loginToggle = document.getElementById('login-toggle-btn');
+  const profileSection = document.getElementById('profile-section');
   
   if (loginInputs) loginInputs.style.display = 'flex';
   if (authStatus) authStatus.style.display = 'none';
   if (loginFields) loginFields.classList.add(LOGIN_COLLAPSED_CLASS);
   if (loginToggle) {
     loginToggle.style.display = 'inline-flex';
-    loginToggle.textContent = 'Connexion';
+    loginToggle.textContent = authMode === 'bootstrap' ? 'Créer le compte admin' : 'Connexion';
   }
   document.getElementById('login-error').textContent = '';
+  if (profileSection) profileSection.classList.remove('visible');
+  detectAuthMode();
   
   disableButtons();
 }
@@ -179,6 +630,8 @@ if (token) {
   disableButtons();
 }
 
+detectAuthMode();
+
 function handleLoginToggle() {
   // Gère le bouton unique "Connexion / Se connecter" selon l'état courant.
   if (isAuthenticated) return;
@@ -189,12 +642,67 @@ function handleLoginToggle() {
 
   if (loginFields && loginFields.classList.contains(LOGIN_COLLAPSED_CLASS)) {
     loginFields.classList.remove(LOGIN_COLLAPSED_CLASS);
-    if (loginToggle) loginToggle.textContent = 'Se connecter';
+    if (loginToggle) {
+      loginToggle.textContent = authMode === 'bootstrap' ? 'Créer le compte admin' : 'Se connecter';
+    }
+    updateAuthModeUi();
     if (usernameInput) usernameInput.focus();
     return;
   }
 
+  if (authMode === 'bootstrap') {
+    handleBootstrapRegister();
+    return;
+  }
+
   handleLogin();
+}
+
+async function handleBootstrapRegister() {
+  const username = document.getElementById('username').value.trim();
+  const email = document.getElementById('email')?.value.trim() || '';
+  const password = document.getElementById('password').value;
+  const passwordConfirm = document.getElementById('password-confirm')?.value || '';
+
+  if (!username || !email || !password || !passwordConfirm) {
+    setLoginError('Veuillez remplir tous les champs');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/auth/bootstrap-register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password, passwordConfirm })
+    });
+
+    const payload = await res.json();
+    if (!res.ok) {
+      setLoginError(payload.error || 'Erreur de création du compte');
+      await detectAuthMode();
+      return;
+    }
+
+    token = payload.token;
+    currentUsername = payload.username;
+    localStorage.setItem('auth_token', token);
+    localStorage.setItem('username', currentUsername);
+
+    document.getElementById('username').value = '';
+    if (document.getElementById('email')) document.getElementById('email').value = '';
+    document.getElementById('password').value = '';
+    if (document.getElementById('password-confirm')) document.getElementById('password-confirm').value = '';
+    setLoginError('');
+
+    socket.emit('auth', token);
+    isAuthenticated = true;
+    authMode = 'login';
+    updateAuthModeUi();
+    showAuthInfo();
+    enableButtons();
+  } catch (_) {
+    setLoginError('Erreur réseau');
+  }
 }
 
 async function handleLogin() {
@@ -369,7 +877,181 @@ function mergeLocalSettings(incoming = {}) {
     }
   }
 
+  const incomingAlerts = incoming.alerts || {};
+  const incomingRules = incomingAlerts.rules || {};
+  const legacyAlerts = incoming.alerts || {};
+  merged.alerts.rules = {};
+
+  for (const metric of NOTIFICATION_METRICS) {
+    const baseRule = defaultSettings.alerts.rules[metric] || NOTIFICATION_RULE_DEFAULTS;
+    const incomingRule = incomingRules[metric] || {};
+    merged.alerts.rules[metric] = {
+      push: typeof incomingRule.push === 'boolean' ? incomingRule.push : baseRule.push,
+      email: typeof incomingRule.email === 'boolean' ? incomingRule.email : baseRule.email,
+      startDelaySec: sanitizeAlertSeconds(
+        incomingRule.startDelaySec,
+        baseRule.startDelaySec,
+        ALERT_POLICY_BOUNDS.startDelaySec.min,
+        ALERT_POLICY_BOUNDS.startDelaySec.max
+      ),
+      repeatIntervalSec: sanitizeAlertSeconds(
+        incomingRule.repeatIntervalSec,
+        baseRule.repeatIntervalSec,
+        ALERT_POLICY_BOUNDS.repeatIntervalSec.min,
+        ALERT_POLICY_BOUNDS.repeatIntervalSec.max
+      ),
+      mailDelayMin: sanitizeAlertSeconds(
+        incomingRule.mailDelayMin,
+        baseRule.mailDelayMin,
+        ALERT_POLICY_BOUNDS.mailDelayMin.min,
+        ALERT_POLICY_BOUNDS.mailDelayMin.max
+      ),
+      recoveryResetSec: sanitizeAlertSeconds(
+        incomingRule.recoveryResetSec,
+        baseRule.recoveryResetSec,
+        ALERT_POLICY_BOUNDS.recoveryResetSec.min,
+        ALERT_POLICY_BOUNDS.recoveryResetSec.max
+      )
+    };
+
+    if (
+      LINKED_THRESHOLD_METRICS.includes(metric) &&
+      typeof incomingRule.push !== 'boolean' &&
+      typeof incomingIndicators[metric] === 'boolean'
+    ) {
+      merged.alerts.rules[metric].push = incomingIndicators[metric];
+    }
+
+    if (
+      !Number.isFinite(Number(incomingRule.mailDelayMin)) &&
+      Number.isFinite(Number(incomingRule.pushMailDeltaSec))
+    ) {
+      merged.alerts.rules[metric].mailDelayMin = sanitizeAlertSeconds(
+        Math.round(Number(incomingRule.pushMailDeltaSec) / 60),
+        baseRule.mailDelayMin,
+        ALERT_POLICY_BOUNDS.mailDelayMin.min,
+        ALERT_POLICY_BOUNDS.mailDelayMin.max
+      );
+    }
+
+    if (
+      !Number.isFinite(Number(incomingRule.mailDelayMin)) &&
+      !Number.isFinite(Number(incomingRule.pushMailDeltaSec)) &&
+      Number.isFinite(Number(legacyAlerts.mailDelayMin))
+    ) {
+      merged.alerts.rules[metric].mailDelayMin = sanitizeAlertSeconds(
+        Number(legacyAlerts.mailDelayMin),
+        baseRule.mailDelayMin,
+        ALERT_POLICY_BOUNDS.mailDelayMin.min,
+        ALERT_POLICY_BOUNDS.mailDelayMin.max
+      );
+    }
+
+    if (
+      !Number.isFinite(Number(incomingRule.mailDelayMin)) &&
+      !Number.isFinite(Number(incomingRule.pushMailDeltaSec)) &&
+      !Number.isFinite(Number(legacyAlerts.mailDelayMin)) &&
+      Number.isFinite(Number(legacyAlerts.pushMailDeltaSec))
+    ) {
+      merged.alerts.rules[metric].mailDelayMin = sanitizeAlertSeconds(
+        Math.round(Number(legacyAlerts.pushMailDeltaSec) / 60),
+        baseRule.mailDelayMin,
+        ALERT_POLICY_BOUNDS.mailDelayMin.min,
+        ALERT_POLICY_BOUNDS.mailDelayMin.max
+      );
+    }
+  }
+
+  // Source of truth: keep threshold bells synced with notification push rules.
+  for (const metric of LINKED_THRESHOLD_METRICS) {
+    if (Object.prototype.hasOwnProperty.call(merged.indicators, metric)) {
+      merged.indicators[metric] = Boolean(merged.alerts.rules?.[metric]?.push);
+    }
+  }
+
   return merged;
+}
+
+function setActiveSettingsTab(tabName) {
+  const tabs = ['thresholds', 'automations', 'notifications'];
+  for (const tab of tabs) {
+    const tabBtn = document.getElementById(`tab-btn-${tab}`);
+    const panel = document.getElementById(`settings-panel-${tab}`);
+    const isActive = tab === tabName;
+
+    if (tabBtn) {
+      tabBtn.classList.toggle('active', isActive);
+      tabBtn.setAttribute('aria-selected', String(isActive));
+    }
+
+    if (panel) {
+      panel.classList.toggle('active', isActive);
+      panel.hidden = !isActive;
+    }
+  }
+}
+
+function updateThresholdAlertButton(sensorKey) {
+  const bellButton = document.getElementById(`alert-bell-${sensorKey}`);
+  if (!bellButton) return;
+
+  const pushEnabled = Boolean(settingsCache.alerts?.rules?.[sensorKey]?.push);
+  bellButton.classList.toggle('active', pushEnabled);
+  bellButton.setAttribute('aria-pressed', String(pushEnabled));
+}
+
+function updateNotificationRuleButtons(metric) {
+  const pushButton = document.getElementById(`notif-push-${metric}`);
+  const mailButton = document.getElementById(`notif-mail-${metric}`);
+  const rule = settingsCache.alerts?.rules?.[metric] || NOTIFICATION_RULE_DEFAULTS;
+
+  if (pushButton) {
+    pushButton.classList.toggle('active', Boolean(rule.push));
+    pushButton.setAttribute('aria-pressed', String(Boolean(rule.push)));
+  }
+
+  if (mailButton) {
+    mailButton.classList.toggle('active', Boolean(rule.email));
+    mailButton.setAttribute('aria-pressed', String(Boolean(rule.email)));
+  }
+}
+
+function toggleNotificationRuleChannel(metric, channel) {
+  if (!NOTIFICATION_METRICS.includes(metric)) return;
+  if (!['push', 'email'].includes(channel)) return;
+  if (!isAuthenticated) {
+    setLoginError('Veuillez vous connecter pour modifier les alertes');
+    return;
+  }
+
+  const rule = settingsCache.alerts?.rules?.[metric];
+  if (!rule) return;
+
+  rule[channel] = !Boolean(rule[channel]);
+
+  if (channel === 'push' && Object.prototype.hasOwnProperty.call(settingsCache.indicators, metric)) {
+    settingsCache.indicators[metric] = rule.push;
+    updateThresholdAlertButton(metric);
+  }
+
+  updateNotificationRuleButtons(metric);
+}
+
+function toggleThresholdAlertChannel(sensorKey, channel) {
+  if (channel !== 'push') return;
+  if (!isAuthenticated) {
+    setLoginError('Veuillez vous connecter pour modifier les alertes');
+    return;
+  }
+
+  const current = Boolean(settingsCache.indicators?.[sensorKey]);
+  const next = !current;
+  settingsCache.indicators[sensorKey] = next;
+  if (settingsCache.alerts?.rules?.[sensorKey]) {
+    settingsCache.alerts.rules[sensorKey].push = next;
+    updateNotificationRuleButtons(sensorKey);
+  }
+  updateThresholdAlertButton(sensorKey);
 }
 
 function getDurationBounds(type) {
@@ -520,6 +1202,12 @@ function parseThresholdInput(elementId, fallbackValue) {
   return Number.isFinite(parsed) ? parsed : fallbackValue;
 }
 
+function setInputValueIfExists(elementId, value) {
+  const element = document.getElementById(elementId);
+  if (!element) return;
+  element.value = value;
+}
+
 // Construit l'objet settings à envoyer au backend depuis le formulaire.
 function collectSettingsFromUi() {
   return {
@@ -539,13 +1227,15 @@ function collectSettingsFromUi() {
       temp: {
         min: parseThresholdInput('temp-min', settingsCache.thresholds.temp.min),
         max: parseThresholdInput('temp-max', settingsCache.thresholds.temp.max)
-      },
-      rssi: {
-        min: parseThresholdInput('rssi-min', settingsCache.thresholds.rssi.min),
-        max: parseThresholdInput('rssi-max', settingsCache.thresholds.rssi.max)
       }
     },
-    indicators: { ...settingsCache.indicators },
+    indicators: {
+      lux: Boolean(settingsCache.indicators.lux),
+      soil: Boolean(settingsCache.indicators.soil),
+      air: Boolean(settingsCache.indicators.air),
+      temp: Boolean(settingsCache.indicators.temp),
+      pressure: settingsCache.indicators.pressure
+    },
     automations: {
       led: automationStates.led,
       hum: automationStates.hum,
@@ -555,29 +1245,43 @@ function collectSettingsFromUi() {
       led: sanitizeDuration('led', parseThresholdInput('led-duration', settingsCache.automationDurations.led)),
       hum: sanitizeDuration('hum', parseThresholdInput('hum-duration', settingsCache.automationDurations.hum)),
       fan: sanitizeDuration('fan', parseThresholdInput('fan-duration', settingsCache.automationDurations.fan))
+    },
+    alerts: {
+      ...getAlertSettingsFromUi()
     }
   };
 }
 
 // Répercute `settingsCache` vers les champs UI et toggles auto.
 function applySettingsToUi() {
-  document.getElementById('lux-min').value = settingsCache.thresholds.lux.min;
-  document.getElementById('lux-max').value = settingsCache.thresholds.lux.max;
-  document.getElementById('soil-min').value = settingsCache.thresholds.soil.min;
-  document.getElementById('soil-max').value = settingsCache.thresholds.soil.max;
-  document.getElementById('air-min').value = settingsCache.thresholds.air.min;
-  document.getElementById('air-max').value = settingsCache.thresholds.air.max;
-  document.getElementById('temp-min').value = settingsCache.thresholds.temp.min;
-  document.getElementById('temp-max').value = settingsCache.thresholds.temp.max;
-  document.getElementById('rssi-min').value = settingsCache.thresholds.rssi.min;
-  document.getElementById('rssi-max').value = settingsCache.thresholds.rssi.max;
-  document.getElementById('led-duration').value = sanitizeDuration('led', settingsCache.automationDurations.led);
-  document.getElementById('hum-duration').value = sanitizeDuration('hum', settingsCache.automationDurations.hum);
-  document.getElementById('fan-duration').value = sanitizeDuration('fan', settingsCache.automationDurations.fan);
+  setInputValueIfExists('lux-min', settingsCache.thresholds.lux.min);
+  setInputValueIfExists('lux-max', settingsCache.thresholds.lux.max);
+  setInputValueIfExists('soil-min', settingsCache.thresholds.soil.min);
+  setInputValueIfExists('soil-max', settingsCache.thresholds.soil.max);
+  setInputValueIfExists('air-min', settingsCache.thresholds.air.min);
+  setInputValueIfExists('air-max', settingsCache.thresholds.air.max);
+  setInputValueIfExists('temp-min', settingsCache.thresholds.temp.min);
+  setInputValueIfExists('temp-max', settingsCache.thresholds.temp.max);
+  setInputValueIfExists('led-duration', sanitizeDuration('led', settingsCache.automationDurations.led));
+  setInputValueIfExists('hum-duration', sanitizeDuration('hum', settingsCache.automationDurations.hum));
+  setInputValueIfExists('fan-duration', sanitizeDuration('fan', settingsCache.automationDurations.fan));
+
+  for (const metric of NOTIFICATION_METRICS) {
+    const rule = settingsCache.alerts?.rules?.[metric] || NOTIFICATION_RULE_DEFAULTS;
+    setInputValueIfExists(`notif-start-${metric}`, rule.startDelaySec);
+    setInputValueIfExists(`notif-repeat-${metric}`, rule.repeatIntervalSec);
+    setInputValueIfExists(`notif-delta-${metric}`, rule.mailDelayMin);
+    setInputValueIfExists(`notif-reset-${metric}`, rule.recoveryResetSec);
+    updateNotificationRuleButtons(metric);
+  }
 
   setAutomationVisualState('led', settingsCache.automations.led);
   setAutomationVisualState('hum', settingsCache.automations.hum);
   setAutomationVisualState('fan', settingsCache.automations.fan);
+  updateThresholdAlertButton('lux');
+  updateThresholdAlertButton('soil');
+  updateThresholdAlertButton('air');
+  updateThresholdAlertButton('temp');
 }
 
 // Gestion d'un toggle auto : sécurité auth, persist, application immédiate.
@@ -625,10 +1329,15 @@ function toggleSettingsSection() {
     return;
   }
   const settingsSection = document.getElementById('settings-section');
+  const profileSection = document.getElementById('profile-section');
   if (settingsSection) {
     settingsSection.classList.toggle('visible');
+    if (profileSection && settingsSection.classList.contains('visible')) {
+      profileSection.classList.remove('visible');
+    }
     // Recharge les paramètres quand la section devient visible
     if (settingsSection.classList.contains('visible')) {
+      setActiveSettingsTab('thresholds');
       loadSettings();
     }
   }
@@ -647,7 +1356,7 @@ socket.on('telemetry', d => {
   update('humidity', d.humidite_air || 0, thresholds.air.min, thresholds.air.max);
   update('temp', d.temperature || 0, thresholds.temp.min, thresholds.temp.max);
   update('pressure', d.pressure || 0, 990, 1030);
-  update('rssi', d.rssi || -100, thresholds.rssi.min, thresholds.rssi.max);
+  update('rssi', d.rssi || -100, RSSI_FIXED_RANGE.min, RSSI_FIXED_RANGE.max);
   updateWaterLevel(typeof d.water_full === 'boolean' ? d.water_full : null);
   
   // Ajoute le nouveau point au graphique
@@ -682,6 +1391,7 @@ socket.on('telemetry', d => {
   }
 
   runAutomations(d);
+  maybeSendPushAlerts(d);
 });
 
 // === Graphique ===
@@ -899,8 +1609,77 @@ function zoomOut() {
   applyZoom();
 }
 
+function initLayoutResizer() {
+  const main = document.querySelector('main');
+  const interfaceStack = document.getElementById('interface-stack');
+  const interfaceSection = document.getElementById('interface-section');
+  const resizer = document.getElementById('layout-resizer');
+  if (!main || !interfaceStack || !interfaceSection || !resizer) return;
+
+  const desktopQuery = window.matchMedia('(min-width: 821px)');
+  const MIN_PANEL_PX = 0;
+  const DEFAULT_INTERFACE_RATIO = 0.45;
+  let dragging = false;
+
+  const getInterfaceMaxBasis = () => {
+    const mainRect = main.getBoundingClientRect();
+    const fullMainMax = mainRect.height - resizer.offsetHeight;
+    const bubblesLevelMax = Math.ceil(interfaceSection.getBoundingClientRect().height);
+    return Math.max(MIN_PANEL_PX, Math.min(fullMainMax, bubblesLevelMax));
+  };
+
+  const applyFromClientY = (clientY) => {
+    const rect = main.getBoundingClientRect();
+    const maxBasis = getInterfaceMaxBasis();
+    const desired = Math.round(clientY - rect.top);
+    const basis = Math.max(MIN_PANEL_PX, Math.min(maxBasis, desired));
+    interfaceStack.style.flexBasis = `${basis}px`;
+    if (chart) chart.resize();
+  };
+
+  const syncForViewport = () => {
+    if (!desktopQuery.matches) {
+      interfaceStack.style.flexBasis = 'auto';
+      return;
+    }
+
+    const rect = main.getBoundingClientRect();
+  const maxBasis = getInterfaceMaxBasis();
+    const currentBasis = parseFloat(interfaceStack.style.flexBasis);
+    const fallbackBasis = Math.round(rect.height * DEFAULT_INTERFACE_RATIO);
+    const basisSource = Number.isFinite(currentBasis) ? currentBasis : fallbackBasis;
+    const clamped = Math.max(MIN_PANEL_PX, Math.min(maxBasis, basisSource));
+    interfaceStack.style.flexBasis = `${Math.round(clamped)}px`;
+    if (chart) chart.resize();
+  };
+
+  resizer.addEventListener('pointerdown', (event) => {
+    if (!desktopQuery.matches) return;
+    dragging = true;
+    document.body.classList.add('layout-resizing');
+    resizer.setPointerCapture(event.pointerId);
+    applyFromClientY(event.clientY);
+  });
+
+  window.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    applyFromClientY(event.clientY);
+  });
+
+  window.addEventListener('pointerup', () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove('layout-resizing');
+  });
+
+  window.addEventListener('resize', syncForViewport);
+  syncForViewport();
+}
+
 // Zoom avec la molette de la souris
 document.addEventListener('DOMContentLoaded', () => {
+  initLayoutResizer();
+
   // Active le zoom molette uniquement sur la zone graphique.
   const chartWrapper = document.getElementById('chart-wrapper');
   if (chartWrapper) {
@@ -956,6 +1735,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js')
       .then((registration) => {
+        swRegistrationRef = registration;
         activateUpdate(registration);
 
         registration.addEventListener('updatefound', () => {
@@ -978,3 +1758,15 @@ if ('serviceWorker' in navigator) {
       });
   });
 }
+
+window.addEventListener('pointerdown', () => {
+  const hasEnabledPushRule = NOTIFICATION_METRICS.some((metric) => Boolean(settingsCache.alerts?.rules?.[metric]?.push));
+  if (!hasEnabledPushRule) return;
+  ensurePushPermission();
+}, { once: true, capture: true });
+
+window.addEventListener('keydown', () => {
+  const hasEnabledPushRule = NOTIFICATION_METRICS.some((metric) => Boolean(settingsCache.alerts?.rules?.[metric]?.push));
+  if (!hasEnabledPushRule) return;
+  ensurePushPermission();
+}, { once: true, capture: true });

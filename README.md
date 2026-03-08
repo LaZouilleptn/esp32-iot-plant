@@ -43,7 +43,7 @@ esp32-iot-plant/
   └── public/
     ├── index.html      # Structure HTML (sans styles inline)
     ├── style.css       # Styles globaux et panneau Parametres
-    └── app.js          # Auth JWT, WebSocket, graphiques, seuils
+    └── script.js       # Auth JWT, WebSocket, graphiques, seuils
 ```
 
 ## Installation
@@ -148,7 +148,7 @@ docker compose exec influxdb influx ping
 #### Grafana (`grafana`)
 - URL : `http://localhost:3001`
 - Login admin : `GRAFANA_USER` / `GRAFANA_PASSWORD`.
-- Datasource Influx provisionnée automatiquement (`InfluxDB-Plant`) via `MQTT-BDD/grafana/provisioning`.
+- Datasource Influx provisionnée automatiquement (`InfluxDB-Plant`) via `MQTT-BDD/grafana/datasources`.
 
 #### Mosquitto (`mqtt-broker`)
 - Ports : `1883` (MQTT TCP), `9001` (WebSocket).

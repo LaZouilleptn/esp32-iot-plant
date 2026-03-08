@@ -32,7 +32,7 @@ services:
     networks:
       - iot-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iot_user}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iot_user} -d ${POSTGRES_DB:-iot_plant}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -125,7 +125,8 @@ services:
       - INFLUX_TOKEN=${INFLUX_TOKEN:-mytoken123456}
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./MQTT-BDD/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./MQTT-BDD/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./MQTT-BDD/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
     networks:
       - iot-network
 

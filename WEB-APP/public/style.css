@@ -59,7 +59,38 @@ main {
   gap: 0.5rem;
   padding: 0.5rem;
   padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  overflow: hidden;
+}
+
+#interface-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 0 0 45%;
+  min-height: 0;
   overflow: auto;
+}
+
+#layout-resizer {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148,163,184,0.2);
+  border: 1px solid rgba(148,163,184,0.25);
+  cursor: ns-resize;
+  flex: 0 0 auto;
+  touch-action: none;
+  opacity: 0.5;
+  transition: opacity 0.2s ease, background-color 0.2s ease;
+}
+
+#layout-resizer:hover {
+  opacity: 0.75;
+  background: rgba(148,163,184,0.3);
+}
+
+body.layout-resizing {
+  user-select: none;
+  cursor: ns-resize;
 }
 
 section {
@@ -303,9 +334,10 @@ h2 {
 }
 
 #chart-section {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 #chart-wrapper {
@@ -344,6 +376,13 @@ canvas {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.auth-mode-hint {
+  margin-top: 0.35rem;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  min-height: 0.9rem;
 }
 
 .login-inputs input {
@@ -419,6 +458,11 @@ canvas {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.user-chip:hover {
+  color: #ffffff;
 }
 
 .btn-circle:disabled {
@@ -497,10 +541,150 @@ button,
   display: block;
 }
 
+#profile-section {
+  background: #1e293b;
+  border-radius: 12px;
+  padding: 0.75rem;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.05);
+  display: none;
+}
+
+#profile-section.visible {
+  display: block;
+}
+
+.profile-timestamps {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.profile-timestamps div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+}
+
+.profile-timestamps strong {
+  color: #f8fafc;
+  font-family: "JetBrains Mono", "Consolas", "Menlo", monospace;
+  font-weight: 600;
+}
+
 .settings-content {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.settings-tab-btn {
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(148,163,184,0.35);
+  background: rgba(15,23,42,0.7);
+  color: #cbd5e1;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.settings-tab-btn:hover {
+  border-color: rgba(16,185,129,0.55);
+  color: #f8fafc;
+}
+
+.settings-tab-btn.active {
+  background: rgba(16,185,129,0.2);
+  border-color: rgba(16,185,129,0.9);
+  color: #ecfeff;
+}
+
+.settings-panel {
+  display: none;
+  gap: 1rem;
+  flex-direction: column;
+}
+
+.settings-panel.active {
+  display: flex;
+}
+
+.threshold-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 0.75rem;
+}
+
+.automations-cards-grid {
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+
+.threshold-card {
+  position: relative;
+  border: 1px solid rgba(148,163,184,0.26);
+  background:
+    radial-gradient(circle at top right, rgba(16,185,129,0.13), transparent 38%),
+    linear-gradient(155deg, rgba(15,23,42,0.9), rgba(30,41,59,0.78));
+  border-radius: 14px;
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  box-shadow: 0 10px 24px rgba(2,6,23,0.35), inset 0 1px 0 rgba(255,255,255,0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.threshold-card::before {
+  content: '';
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  top: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(16,185,129,0.88), rgba(6,182,212,0.45));
+}
+
+.threshold-card:hover {
+  border-color: rgba(16,185,129,0.45);
+  box-shadow: 0 14px 28px rgba(2,6,23,0.45), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+.threshold-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: nowrap;
+}
+
+.threshold-card-head h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: 0.01em;
+}
+
+.threshold-card-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: flex-end;
+  gap: 0.85rem;
+  width: 100%;
+}
+
+.single-field-row {
+  grid-template-columns: 1fr;
 }
 
 .setting-group {
@@ -514,6 +698,54 @@ button,
   font-size: 0.85rem;
   font-weight: 600;
   color: #e2e8f0;
+}
+
+.setting-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.alert-channel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.channel-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid rgba(148,163,184,0.34);
+  background: linear-gradient(180deg, rgba(51,65,85,0.55), rgba(15,23,42,0.9));
+  color: #dbe7f5;
+  font-size: 0.96rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.channel-btn:hover {
+  border-color: rgba(16,185,129,0.72);
+}
+
+.channel-btn.active {
+  border-color: rgba(16,185,129,0.96);
+  background: linear-gradient(180deg, rgba(16,185,129,0.33), rgba(5,150,105,0.28));
+  color: #ecfeff;
+  box-shadow: 0 0 0 2px rgba(16,185,129,0.25);
+}
+
+.channel-btn.standby {
+  border-style: dashed;
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 
 .threshold-inputs {
@@ -530,6 +762,24 @@ button,
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+.unit-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.unit-input .input-unit {
+  position: absolute;
+  right: 0.62rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.73rem;
+  font-weight: 700;
+  color: #94a3b8;
+  pointer-events: none;
+  user-select: none;
 }
 
 .threshold-label {
@@ -585,10 +835,188 @@ button,
   max-width: none;
 }
 
+/* Les champs de l'onglet Seuils restent compacts (~10 caracteres). */
+#settings-panel-thresholds .threshold-field {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+#settings-panel-thresholds .threshold-inputs input {
+  width: 12ch;
+  min-width: 12ch;
+  max-width: 12ch;
+}
+
+#settings-panel-thresholds .threshold-card-fields input {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  padding: 0.45rem 2.45rem 0.45rem 0.58rem;
+  border-radius: 10px;
+  border: 1px solid rgba(148,163,184,0.35);
+  background: linear-gradient(180deg, rgba(2,6,23,0.72), rgba(15,23,42,0.92));
+  color: #f8fafc;
+  font-family: "JetBrains Mono", "Consolas", "Menlo", monospace;
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+#settings-panel-thresholds .threshold-card-fields .threshold-field {
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+#settings-panel-thresholds .threshold-card-fields .threshold-label {
+  text-align: center;
+}
+
+#settings-panel-thresholds .threshold-card-fields input:focus {
+  outline: none;
+  border-color: rgba(16,185,129,0.95);
+  box-shadow: 0 0 0 3px rgba(16,185,129,0.2);
+}
+
+#settings-panel-thresholds .threshold-card-fields input::placeholder {
+  color: rgba(148,163,184,0.72);
+}
+
+#settings-panel-thresholds input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+#settings-panel-thresholds input[type="number"]::-webkit-outer-spin-button,
+#settings-panel-thresholds input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+#settings-panel-automations .threshold-card-fields .threshold-field {
+  min-width: 0;
+  align-items: stretch;
+}
+
+#settings-panel-automations .threshold-card-fields input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.45rem 2.45rem 0.45rem 0.58rem;
+  border-radius: 10px;
+  border: 1px solid rgba(148,163,184,0.35);
+  background: linear-gradient(180deg, rgba(2,6,23,0.72), rgba(15,23,42,0.92));
+  color: #f8fafc;
+  font-family: "JetBrains Mono", "Consolas", "Menlo", monospace;
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+#settings-panel-automations .threshold-card-fields input:focus {
+  outline: none;
+  border-color: rgba(16,185,129,0.95);
+  box-shadow: 0 0 0 3px rgba(16,185,129,0.2);
+}
+
+#settings-panel-automations input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+#settings-panel-automations input[type="number"]::-webkit-outer-spin-button,
+#settings-panel-automations input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .durations-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
+}
+
+.notifications-grid {
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.notifications-cards-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.notification-timing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+#settings-panel-notifications .threshold-field {
+  min-width: 0;
+}
+
+#settings-panel-notifications .threshold-label {
+  text-align: center;
+}
+
+#settings-panel-notifications .notification-timing-grid input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.45rem 2.45rem 0.45rem 0.58rem;
+  border-radius: 10px;
+  border: 1px solid rgba(148,163,184,0.35);
+  background: linear-gradient(180deg, rgba(2,6,23,0.72), rgba(15,23,42,0.92));
+  color: #f8fafc;
+  font-family: "JetBrains Mono", "Consolas", "Menlo", monospace;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+#settings-panel-notifications .notification-timing-grid input:focus {
+  outline: none;
+  border-color: rgba(16,185,129,0.95);
+  box-shadow: 0 0 0 3px rgba(16,185,129,0.2);
+}
+
+#settings-panel-notifications input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+#settings-panel-notifications input[type="number"]::-webkit-outer-spin-button,
+#settings-panel-notifications input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.toggles-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.inline-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(148,163,184,0.22);
+  background: rgba(15,23,42,0.55);
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.inline-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #10b981;
+}
+
+.inline-toggle input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .durations-grid .setting-group {
@@ -621,6 +1049,38 @@ button,
   background: #059669;
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(16,185,129,0.3);
+}
+
+.profile-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.danger-btn {
+  padding: 0.75rem;
+  background: #ef4444;
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 0.5rem;
+}
+
+.danger-btn:hover {
+  background: #dc2626;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(239,68,68,0.3);
+}
+
+@media (max-width: 760px) {
+  .profile-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-placeholder {
@@ -689,6 +1149,16 @@ button,
     overflow: visible;
   }
 
+  #interface-stack {
+    flex: 0 0 auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  #layout-resizer {
+    display: none;
+  }
+
   header {
     flex-wrap: wrap;
     gap: 0.75rem;
@@ -702,6 +1172,39 @@ button,
 }
 
 @media (max-width: 620px) {
+  .settings-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .threshold-cards-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .threshold-card-head {
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .threshold-card-fields {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.55rem;
+  }
+
+  .notification-timing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .setting-row-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .toggles-grid {
+    grid-template-columns: 1fr;
+  }
+
   .threshold-inputs {
     flex-direction: column;
     align-items: stretch;
