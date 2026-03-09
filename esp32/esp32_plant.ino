@@ -97,7 +97,7 @@ void Actions(char *topic, byte *payload, unsigned int length)
   }
 }
 
-// === Connexion au serveur MQTT avec tentative automatique ===
+// === Connexion au serveur MQTT avec tentative automatique. ===
 void tryConnectMQTT()
 {
   if (!mqtt.connected() && millis() - lastRetry > retryInterval)
