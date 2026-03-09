@@ -7,7 +7,7 @@
 #include <Adafruit_BME280.h>
 #include <adafruit_sensor.h>
 
-// ================= RÉGLAGES MQTT =================
+// ================= RÉGLAGES MQTT. =================
 // Adresse et port du serveur MQTT
 const char *MQTT_HOST = "172.16.8.111";
 const int MQTT_PORT = 1883;
